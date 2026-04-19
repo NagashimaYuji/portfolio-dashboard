@@ -181,11 +181,15 @@ else:
     print(f'D US$建て社債: {sec_d:,.0f}  (row54 col8 小計)')
 totals[d_label] = sec_d
 
-# ── E: Private Credit (為替調整) ──────────────────────────
+# ── E: Private Credit (row56 col8 小計) ───────────────────
 e_label = next((k for k in ts_row_map if 'Private' in k or 'Credit' in k), 'Private Credit')
-e_base = base_val(e_label)
-sec_e = e_base * (USDJPY_NEW / USDJPY_PREV) if e_base else 0.0
-print(f'E {e_label}: {sec_e:,.0f}  (ベース {e_base:,.0f} × {USDJPY_NEW/USDJPY_PREV:.4f})')
+sec_e = fvn(56, 8)
+if sec_e is None or sec_e == 0:
+    e_base = base_val(e_label)
+    sec_e = e_base * (USDJPY_NEW / USDJPY_PREV) if e_base else 0.0
+    print(f'E {e_label}: {sec_e:,.0f}  (小計読み取り失敗 → ベース {e_base:,.0f} × 為替調整)')
+else:
+    print(f'E {e_label}: {sec_e:,.0f}  (row56 col8 小計)')
 totals[e_label] = sec_e
 
 # ── F: 投資信託 (row68 col8 小計) ─────────────────────────
