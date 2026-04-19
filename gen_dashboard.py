@@ -582,7 +582,7 @@ body{{font-family:"Meiryo","Yu Gothic",sans-serif;background:#f0f2f5;font-size:.
         </div>
         <div class="mb-3">
           <label class="form-label small fw-semibold">新しいパスワード</label>
-          <input type="password" class="form-control" id="cp-new" placeholder="新しいパスワード (8文字以上)">
+          <input type="password" class="form-control" id="cp-new" placeholder="新しいパスワード (4文字以上)">
         </div>
         <div class="mb-3">
           <label class="form-label small fw-semibold">新しいパスワード（確認）</label>
@@ -648,8 +648,8 @@ async function doChangePw() {{
   if (!cur || !nw || !confirm) {{
     errEl.textContent = 'すべての項目を入力してください。'; errEl.classList.remove('d-none'); return;
   }}
-  if (nw.length < 8) {{
-    errEl.textContent = '新しいパスワードは8文字以上にしてください。'; errEl.classList.remove('d-none'); return;
+  if (nw.length < 4) {{
+    errEl.textContent = '新しいパスワードは4文字以上にしてください。'; errEl.classList.remove('d-none'); return;
   }}
   if (nw !== confirm) {{
     errEl.textContent = '新しいパスワードが一致しません。'; errEl.classList.remove('d-none'); return;
