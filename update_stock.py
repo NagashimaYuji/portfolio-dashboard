@@ -24,9 +24,21 @@ from bs4 import BeautifulSoup
 import yfinance as yf
 import openpyxl
 
-BASE_DIR    = r'C:\Users\yna78\OneDrive - Corazon\Yuji Private\資産ポートフォリオ戦略'
-EXCEL_FILE  = os.path.join(BASE_DIR, '資産クラス整理_20260415.xlsx')
-SOURCE_SHEET = '資産クラス20260415'
+BASE_DIR   = r'C:\Users\yna78\OneDrive - Corazon\Yuji Private\資産ポートフォリオ戦略'
+EXCEL_FILE = os.path.join(BASE_DIR, '資産クラス整理_20260415.xlsx')
+
+def find_latest_sheet(wb) -> str:
+    """直近の「資産クラスYYYYMMDD」シートを返す（今日のシートは除く）"""
+    today_str = date.today().strftime('%Y%m%d')
+    candidates = sorted(
+        [s for s in wb.sheetnames
+         if s.startswith('資産クラス') and s[5:].isdigit()
+         and len(s[5:]) == 8 and s[5:] != today_str],
+        reverse=True
+    )
+    if not candidates:
+        raise RuntimeError('コピー元となる資産クラスシートが見つかりません')
+    return candidates[0]
 
 SCRAPE_HEADERS = {
     'User-Agent': (
@@ -151,7 +163,6 @@ def main():
 
     print(f'=== update_stock.py 実行日: {today} ===')
     print(f'ソースファイル: {EXCEL_FILE}')
-    print(f'ソースシート  : {SOURCE_SHEET}')
 
     if not os.path.exists(EXCEL_FILE):
         print(f'[ERROR] ファイルが見つかりません: {EXCEL_FILE}')
@@ -162,13 +173,12 @@ def main():
 
     wb = openpyxl.load_workbook(tmp_path)
 
-    if SOURCE_SHEET not in wb.sheetnames:
-        print(f'[ERROR] シート "{SOURCE_SHEET}" が見つかりません。利用可能: {wb.sheetnames}')
-        os.remove(tmp_path)
-        sys.exit(1)
+    # コピー元: 直近の日付シートを自動選択
+    source_sheet = find_latest_sheet(wb)
+    print(f'ソースシート  : {source_sheet}  →  {new_sheet}')
 
-    print(f'\nシートをコピー: {SOURCE_SHEET} → {new_sheet}')
-    ws = copy_worksheet(wb, SOURCE_SHEET, new_sheet)
+    print(f'\nシートをコピー: {source_sheet} → {new_sheet}')
+    ws = copy_worksheet(wb, source_sheet, new_sheet)
 
     ws.cell(row=1, column=1).value = update_label
     print(f'A1 に "{update_label}" を記入')
