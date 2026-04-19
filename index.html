@@ -44,34 +44,135 @@ body{font-family:"Meiryo","Yu Gothic",sans-serif;background:#f0f2f5;font-size:.8
     <p id="pw-err">パスワードが違います。もう一度お試しください。</p>
   </div>
 </div>
+
+<!-- ▼ パスワード変更モーダル -->
+<div class="modal fade" id="changePwModal" tabindex="-1" aria-labelledby="changePwModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered" style="max-width:380px;">
+    <div class="modal-content border-0 shadow-lg rounded-4">
+      <div class="modal-header border-0 pb-0">
+        <h5 class="modal-title fw-bold" id="changePwModalLabel">🔑 パスワード変更</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body pt-2">
+        <div class="mb-3">
+          <label class="form-label small fw-semibold">現在のパスワード</label>
+          <input type="password" class="form-control" id="cp-current" placeholder="現在のパスワード">
+        </div>
+        <div class="mb-3">
+          <label class="form-label small fw-semibold">新しいパスワード</label>
+          <input type="password" class="form-control" id="cp-new" placeholder="新しいパスワード (8文字以上)">
+        </div>
+        <div class="mb-3">
+          <label class="form-label small fw-semibold">新しいパスワード（確認）</label>
+          <input type="password" class="form-control" id="cp-confirm" placeholder="もう一度入力">
+        </div>
+        <div id="cp-err" class="alert alert-danger py-2 small d-none"></div>
+        <div id="cp-ok"  class="alert alert-success py-2 small d-none">✅ パスワードを変更しました</div>
+      </div>
+      <div class="modal-footer border-0 pt-0">
+        <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">キャンセル</button>
+        <button type="button" class="btn btn-primary btn-sm fw-semibold" onclick="doChangePw()">変更を保存</button>
+      </div>
+    </div>
+  </div>
+</div>
+<!-- ▲ パスワード変更モーダル -->
+
 <script>
-// セッション内で認証済みならオーバーレイを即非表示
-if(sessionStorage.getItem('pf_auth')==='1'){
-  document.getElementById('auth-overlay').style.display='none';
+// ── 認証ロジック ─────────────────────────────────────────
+const DEFAULT_HASH = '050e4334c7c6c725f6545eb9cfe042e1dbdf5278c15741203eb0b407b9a26c02';  // gen_dashboard.py の DASHBOARD_PASSWORD から生成
+
+// localStorageにカスタムハッシュがあればそちらを優先
+function getActiveHash() {
+  return localStorage.getItem('pf_pw_hash') || DEFAULT_HASH;
 }
-const PW_HASH='050e4334c7c6c725f6545eb9cfe042e1dbdf5278c15741203eb0b407b9a26c02';
-async function checkPw(){
-  const pw=document.getElementById('pw-input').value;
-  const buf=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(pw));
-  const hex=Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
-  if(hex===PW_HASH){
-    sessionStorage.setItem('pf_auth','1');
-    document.getElementById('auth-overlay').style.display='none';
-  }else{
-    const err=document.getElementById('pw-err');
-    err.style.display='block';
-    document.getElementById('pw-input').value='';
+
+async function sha256(str) {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,'0')).join('');
+}
+
+// セッション内で認証済みならオーバーレイを即非表示
+if (sessionStorage.getItem('pf_auth') === '1') {
+  document.getElementById('auth-overlay').style.display = 'none';
+}
+
+async function checkPw() {
+  const pw  = document.getElementById('pw-input').value;
+  const hex = await sha256(pw);
+  if (hex === getActiveHash()) {
+    sessionStorage.setItem('pf_auth', '1');
+    document.getElementById('auth-overlay').style.display = 'none';
+  } else {
+    const err = document.getElementById('pw-err');
+    err.style.display = 'block';
+    document.getElementById('pw-input').value = '';
     document.getElementById('pw-input').focus();
-    setTimeout(()=>err.style.display='none',3000);
+    setTimeout(() => err.style.display = 'none', 3000);
   }
 }
-window.addEventListener('load',()=>document.getElementById('pw-input').focus());
+
+// ── パスワード変更 ────────────────────────────────────────
+async function doChangePw() {
+  const cur     = document.getElementById('cp-current').value;
+  const nw      = document.getElementById('cp-new').value;
+  const confirm = document.getElementById('cp-confirm').value;
+  const errEl   = document.getElementById('cp-err');
+  const okEl    = document.getElementById('cp-ok');
+  errEl.classList.add('d-none');
+  okEl.classList.add('d-none');
+
+  // バリデーション
+  if (!cur || !nw || !confirm) {
+    errEl.textContent = 'すべての項目を入力してください。'; errEl.classList.remove('d-none'); return;
+  }
+  if (nw.length < 8) {
+    errEl.textContent = '新しいパスワードは8文字以上にしてください。'; errEl.classList.remove('d-none'); return;
+  }
+  if (nw !== confirm) {
+    errEl.textContent = '新しいパスワードが一致しません。'; errEl.classList.remove('d-none'); return;
+  }
+
+  // 現在のパスワード確認
+  const curHash = await sha256(cur);
+  if (curHash !== getActiveHash()) {
+    errEl.textContent = '現在のパスワードが違います。'; errEl.classList.remove('d-none'); return;
+  }
+
+  // 新パスワードを保存
+  const newHash = await sha256(nw);
+  localStorage.setItem('pf_pw_hash', newHash);
+  okEl.classList.remove('d-none');
+
+  // フォームリセット & 3秒後にモーダルを閉じる
+  ['cp-current','cp-new','cp-confirm'].forEach(id => document.getElementById(id).value = '');
+  setTimeout(() => bootstrap.Modal.getInstance(document.getElementById('changePwModal')).hide(), 2000);
+}
+
+// モーダルを開くたびにフォームをリセット
+document.addEventListener('DOMContentLoaded', () => {
+  const modal = document.getElementById('changePwModal');
+  if (modal) {
+    modal.addEventListener('show.bs.modal', () => {
+      ['cp-current','cp-new','cp-confirm'].forEach(id => document.getElementById(id).value = '');
+      document.getElementById('cp-err').classList.add('d-none');
+      document.getElementById('cp-ok').classList.add('d-none');
+    });
+  }
+  document.getElementById('pw-input').focus();
+});
 </script>
-<!-- ▲ 認証オーバーレイここまで -->
+<!-- ▲ 認証スクリプトここまで -->
 
 <nav class="navbar navbar-dark bg-dark px-3 py-2">
   <span class="navbar-brand fw-bold">📊 資産ポートフォリオ ダッシュボード</span>
-  <span class="text-light small">更新日: 2026/04/18 &nbsp;|&nbsp; USD/JPY: 158.58</span>
+  <div class="d-flex align-items-center gap-3">
+    <span class="text-light small">更新日: 2026/04/18 &nbsp;|&nbsp; USD/JPY: 158.58</span>
+    <button class="btn btn-outline-light btn-sm py-0 px-2 small"
+            data-bs-toggle="modal" data-bs-target="#changePwModal">
+      🔑 パスワード変更
+    </button>
+  </div>
 </nav>
 
 <div class="container-fluid px-3 py-3">
