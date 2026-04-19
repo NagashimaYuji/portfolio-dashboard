@@ -1,0 +1,20 @@
+# Excelファイル (個人情報・資産データを含むため除外)
+*.xlsx
+*.xlsm
+*.xls
+
+# 一時ファイル
+*.tmp.xlsx
+_analyze2_tmp.xlsx
+
+# Python キャッシュ
+__pycache__/
+*.pyc
+*.pyo
+
+# JSON データキャッシュ (ダッシュボード生成時の中間ファイル)
+_dashboard_data.json
+
+# OS
+.DS_Store
+Thumbs.db
