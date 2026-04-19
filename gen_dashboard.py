@@ -4,8 +4,14 @@ gen_dashboard.py
 ポートフォリオダッシュボード HTML を生成する
 """
 
-import os, sys, json, re
+import os, sys, json, re, hashlib
 from datetime import datetime
+
+# ──────────────────────────────────────────────────────────
+# パスワード設定 (変更する場合はここを書き換えるだけでOK)
+# ──────────────────────────────────────────────────────────
+DASHBOARD_PASSWORD = 'Corazon2026'
+_pw_hash = hashlib.sha256(DASHBOARD_PASSWORD.encode('utf-8')).hexdigest()
 
 if sys.stdout.encoding and sys.stdout.encoding.lower() in ('cp932', 'shift_jis', 'shift-jis'):
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
@@ -525,6 +531,14 @@ html = f'''<!DOCTYPE html>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
 <style>
 body{{font-family:"Meiryo","Yu Gothic",sans-serif;background:#f0f2f5;font-size:.88rem;}}
+#auth-overlay{{position:fixed;inset:0;background:linear-gradient(135deg,#1a1a2e 0%,#16213e 50%,#0f3460 100%);z-index:99999;display:flex;align-items:center;justify-content:center;}}
+#auth-box{{background:#fff;border-radius:18px;padding:2.8rem 2.4rem;width:340px;text-align:center;box-shadow:0 24px 64px rgba(0,0,0,.55);}}
+#auth-box h4{{color:#1a1a2e;font-weight:700;margin-bottom:1.6rem;letter-spacing:.02em;}}
+#pw-input{{width:100%;padding:.65rem 1rem;border:2px solid #dee2e6;border-radius:9px;font-size:1rem;outline:none;transition:border .2s;margin-bottom:1rem;}}
+#pw-input:focus{{border-color:#0d6efd;}}
+#pw-btn{{width:100%;padding:.65rem;background:linear-gradient(135deg,#0d6efd,#6610f2);color:#fff;border:none;border-radius:9px;font-size:1rem;font-weight:600;cursor:pointer;transition:opacity .2s;}}
+#pw-btn:hover{{opacity:.88;}}
+#pw-err{{color:#dc3545;margin-top:.8rem;font-size:.88rem;display:none;}}
 .navbar-brand{{font-size:1.1rem;}}
 .chart-tall{{height:400px;}}
 .chart-md{{height:280px;}}
@@ -540,6 +554,42 @@ body{{font-family:"Meiryo","Yu Gothic",sans-serif;background:#f0f2f5;font-size:.
 </style>
 </head>
 <body>
+
+<!-- ▼ 認証オーバーレイ -->
+<div id="auth-overlay">
+  <div id="auth-box">
+    <div style="font-size:2.8rem;margin-bottom:.4rem;">🔐</div>
+    <h4>資産ポートフォリオ<br>ダッシュボード</h4>
+    <input type="password" id="pw-input" placeholder="パスワードを入力"
+           onkeydown="if(event.key==='Enter')checkPw()">
+    <button id="pw-btn" onclick="checkPw()">ログイン</button>
+    <p id="pw-err">パスワードが違います。もう一度お試しください。</p>
+  </div>
+</div>
+<script>
+// セッション内で認証済みならオーバーレイを即非表示
+if(sessionStorage.getItem('pf_auth')==='1'){{
+  document.getElementById('auth-overlay').style.display='none';
+}}
+const PW_HASH='{_pw_hash}';
+async function checkPw(){{
+  const pw=document.getElementById('pw-input').value;
+  const buf=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(pw));
+  const hex=Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
+  if(hex===PW_HASH){{
+    sessionStorage.setItem('pf_auth','1');
+    document.getElementById('auth-overlay').style.display='none';
+  }}else{{
+    const err=document.getElementById('pw-err');
+    err.style.display='block';
+    document.getElementById('pw-input').value='';
+    document.getElementById('pw-input').focus();
+    setTimeout(()=>err.style.display='none',3000);
+  }}
+}}
+window.addEventListener('load',()=>document.getElementById('pw-input').focus());
+</script>
+<!-- ▲ 認証オーバーレイここまで -->
 
 <nav class="navbar navbar-dark bg-dark px-3 py-2">
   <span class="navbar-brand fw-bold">📊 資産ポートフォリオ ダッシュボード</span>
