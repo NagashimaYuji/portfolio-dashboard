@@ -8,10 +8,16 @@ import os, sys, json, re, hashlib
 from datetime import datetime
 
 # ──────────────────────────────────────────────────────────
-# パスワード設定 (変更する場合はここを書き換えるだけでOK)
+# パスワード設定
+#   DASHBOARD_PASSWORD : ダッシュボード閲覧パスワード (UI から変更可)
+#   ADMIN_PASSWORD     : 管理者専用パスワード (UIから変更不可・要再デプロイ)
+#                        管理者: NagashimaYuji <yna786@gmail.com>
 # ──────────────────────────────────────────────────────────
 DASHBOARD_PASSWORD = 'Corazon2026'
-_pw_hash = hashlib.sha256(DASHBOARD_PASSWORD.encode('utf-8')).hexdigest()
+ADMIN_PASSWORD     = 'yna786@gmail.com'   # 変更する場合はここを書き換えて再デプロイ
+
+_pw_hash    = hashlib.sha256(DASHBOARD_PASSWORD.encode('utf-8')).hexdigest()
+_admin_hash = hashlib.sha256(ADMIN_PASSWORD.encode('utf-8')).hexdigest()
 
 if sys.stdout.encoding and sys.stdout.encoding.lower() in ('cp932', 'shift_jis', 'shift-jis'):
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
@@ -576,10 +582,14 @@ body{{font-family:"Meiryo","Yu Gothic",sans-serif;background:#f0f2f5;font-size:.
         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
       </div>
       <div class="modal-body pt-2">
-        <div class="mb-3">
-          <label class="form-label small fw-semibold">現在のパスワード</label>
-          <input type="password" class="form-control" id="cp-current" placeholder="現在のパスワード">
+        <div class="alert alert-info py-2 small mb-3">
+          🔒 パスワード変更は管理者のみ実行できます。
         </div>
+        <div class="mb-3">
+          <label class="form-label small fw-semibold">管理者パスワード</label>
+          <input type="password" class="form-control" id="cp-admin" placeholder="管理者パスワードを入力">
+        </div>
+        <hr class="my-2">
         <div class="mb-3">
           <label class="form-label small fw-semibold">新しいパスワード</label>
           <input type="password" class="form-control" id="cp-new" placeholder="新しいパスワード (4文字以上)">
@@ -602,7 +612,8 @@ body{{font-family:"Meiryo","Yu Gothic",sans-serif;background:#f0f2f5;font-size:.
 
 <script>
 // ── 認証ロジック ─────────────────────────────────────────
-const DEFAULT_HASH = '{_pw_hash}';  // gen_dashboard.py の DASHBOARD_PASSWORD から生成
+const DEFAULT_HASH = '{_pw_hash}';   // DASHBOARD_PASSWORD のハッシュ
+const ADMIN_HASH   = '{_admin_hash}'; // 管理者専用ハッシュ (UIから変更不可)
 
 // localStorageにカスタムハッシュがあればそちらを優先
 function getActiveHash() {{
@@ -634,9 +645,9 @@ async function checkPw() {{
   }}
 }}
 
-// ── パスワード変更 ────────────────────────────────────────
+// ── パスワード変更 (管理者のみ) ───────────────────────────
 async function doChangePw() {{
-  const cur     = document.getElementById('cp-current').value;
+  const admin   = document.getElementById('cp-admin').value;
   const nw      = document.getElementById('cp-new').value;
   const confirm = document.getElementById('cp-confirm').value;
   const errEl   = document.getElementById('cp-err');
@@ -645,7 +656,7 @@ async function doChangePw() {{
   okEl.classList.add('d-none');
 
   // バリデーション
-  if (!cur || !nw || !confirm) {{
+  if (!admin || !nw || !confirm) {{
     errEl.textContent = 'すべての項目を入力してください。'; errEl.classList.remove('d-none'); return;
   }}
   if (nw.length < 4) {{
@@ -655,10 +666,10 @@ async function doChangePw() {{
     errEl.textContent = '新しいパスワードが一致しません。'; errEl.classList.remove('d-none'); return;
   }}
 
-  // 現在のパスワード確認
-  const curHash = await sha256(cur);
-  if (curHash !== getActiveHash()) {{
-    errEl.textContent = '現在のパスワードが違います。'; errEl.classList.remove('d-none'); return;
+  // 管理者パスワード確認
+  const adminHash = await sha256(admin);
+  if (adminHash !== ADMIN_HASH) {{
+    errEl.textContent = '管理者パスワードが違います。変更できません。'; errEl.classList.remove('d-none'); return;
   }}
 
   // 新パスワードを保存
@@ -666,8 +677,8 @@ async function doChangePw() {{
   localStorage.setItem('pf_pw_hash', newHash);
   okEl.classList.remove('d-none');
 
-  // フォームリセット & 3秒後にモーダルを閉じる
-  ['cp-current','cp-new','cp-confirm'].forEach(id => document.getElementById(id).value = '');
+  // フォームリセット & 2秒後にモーダルを閉じる
+  ['cp-admin','cp-new','cp-confirm'].forEach(id => document.getElementById(id).value = '');
   setTimeout(() => bootstrap.Modal.getInstance(document.getElementById('changePwModal')).hide(), 2000);
 }}
 
@@ -676,7 +687,7 @@ document.addEventListener('DOMContentLoaded', () => {{
   const modal = document.getElementById('changePwModal');
   if (modal) {{
     modal.addEventListener('show.bs.modal', () => {{
-      ['cp-current','cp-new','cp-confirm'].forEach(id => document.getElementById(id).value = '');
+      ['cp-admin','cp-new','cp-confirm'].forEach(id => document.getElementById(id).value = '');
       document.getElementById('cp-err').classList.add('d-none');
       document.getElementById('cp-ok').classList.add('d-none');
     }});
