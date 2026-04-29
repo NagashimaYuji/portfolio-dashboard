@@ -32,7 +32,75 @@ OUT_HTML   = os.path.join(BASE_DIR, 'dashboard.html')
 TS_SHEET  = '資産推移纏め'
 
 print('Excelを読み込み中...')
-wb = openpyxl.load_workbook(EXCEL_FILE, data_only=True)
+wb         = openpyxl.load_workbook(EXCEL_FILE, data_only=True)   # キャッシュ値
+wb_formula = openpyxl.load_workbook(EXCEL_FILE)                   # 数式文字列
+
+# ──────────────────────────────────────────────────────────
+# クロスシート数式リゾルバ
+# 例: ='資産クラス20260429'!G146 → wb[sheet].cell(row, col).value
+# 最大 3 段階追跡 (G146=F26=SUM(...) のような参照チェーンに対応)
+# ──────────────────────────────────────────────────────────
+import re as _re
+from openpyxl.utils import column_index_from_string as _col_idx
+
+def resolve_cell(sheet_name, row, col, max_depth=4):
+    """
+    指定シートのセル値を解決する。キャッシュ優先 → 数式チェーンを再帰追跡。
+    sheet_name: 対象シート名 (wb/wb_formula の両方に存在すること)
+    """
+    if max_depth <= 0:
+        return None
+    # data_only キャッシュを優先
+    if sheet_name in wb.sheetnames:
+        v = wb[sheet_name].cell(row=row, column=col).value
+        if v is not None and not str(v).startswith('='):
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return None
+    # 数式文字列を取得して再帰
+    if sheet_name not in wb_formula.sheetnames:
+        return None
+    formula = wb_formula[sheet_name].cell(row=row, column=col).value
+    if formula is None:
+        return None
+    s = str(formula).strip().replace('$', '')
+    if not s.startswith('='):
+        try:
+            return float(s)
+        except (TypeError, ValueError):
+            return None
+    expr = s[1:]
+    # クロスシート参照: 'SheetName'!GN または SheetName!GN
+    m_x = _re.match(r"'?([^'!]+)'?!([A-Z]+)(\d+)", expr, _re.IGNORECASE)
+    if m_x:
+        return resolve_cell(m_x.group(1), int(m_x.group(3)),
+                            _col_idx(m_x.group(2).upper()), max_depth - 1)
+    # 同シート内の単純参照: G146 や F26
+    m_s = _re.fullmatch(r'([A-Z]+)(\d+)', expr, _re.IGNORECASE)
+    if m_s:
+        return resolve_cell(sheet_name, int(m_s.group(2)),
+                            _col_idx(m_s.group(1).upper()), max_depth - 1)
+    return None
+
+def resolve_formula_value(formula_str, _unused_ws=None, max_depth=4):
+    """
+    資産推移纏め の数式文字列 (='SheetName'!GN) を解決して数値を返す。
+    """
+    if formula_str is None:
+        return None
+    s = str(formula_str).strip().replace('$', '')
+    if not s.startswith('='):
+        try:
+            return float(s)
+        except (TypeError, ValueError):
+            return None
+    expr = s[1:]
+    m = _re.match(r"'?([^'!]+)'?!([A-Z]+)(\d+)", expr, _re.IGNORECASE)
+    if m:
+        return resolve_cell(m.group(1), int(m.group(3)),
+                            _col_idx(m.group(2).upper()), max_depth)
+    return None
 
 # 最新の「資産クラスYYYYMMDD」シートを自動選択
 _sn_candidates = sorted(
@@ -287,10 +355,35 @@ LAST_COL = max(date_cols) if date_cols else MAX_COL
 print(f'  最新データ列: {LAST_COL}  ({dates[-1] if dates else "?"})')
 
 class_totals_raw = {}
+ws_ts_f = wb_formula[TS_SHEET]   # 数式文字列シート (resolve 用)
+
+# JSON フォールバック: transfer_to_summary.py が出力した計算済み値
+import json as _json, os as _os
+_json_fallback = {}
+_json_path = _os.path.join(BASE_DIR, '_latest_totals.json')
+if _os.path.exists(_json_path):
+    try:
+        with open(_json_path, encoding='utf-8') as _jf:
+            _jd = _json.load(_jf)
+        if _jd.get('sheet') == SN_SHEET:
+            _json_fallback = {k: float(v) for k, v in _jd.get('values', {}).items()}
+            print(f'  JSONフォールバック読込: {_jd.get("date")} ({len(_json_fallback)}項目)')
+    except Exception as _e:
+        print(f'  [WARN] JSON読込失敗: {_e}')
+
 for r in range(3, ws_ts.max_row+1):
     lbl = ws_ts.cell(row=r, column=2).value
     val = ws_ts.cell(row=r, column=LAST_COL).value
-    if lbl and val is not None:
+    if not lbl:
+        continue
+    if val is None:
+        # Step1: 数式チェーンを最大4段階追跡して解決
+        formula_str = ws_ts_f.cell(row=r, column=LAST_COL).value
+        val = resolve_formula_value(formula_str, max_depth=4)
+    if val is None and _json_fallback:
+        # Step2: JSON フォールバック (formula キャッシュが全 None の場合)
+        val = _json_fallback.get(str(lbl).strip())
+    if val is not None:
         try:
             class_totals_raw[str(lbl).strip()] = float(val)
         except (TypeError, ValueError):

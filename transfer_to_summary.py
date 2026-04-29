@@ -442,7 +442,86 @@ print(f'  Total(不動産除く): {total_excl:,.0f}')
 print(f'  Total(不動産含む): {total_incl:,.0f}')
 
 # ═══════════════════════════════════════════════════════════
-# 資産推移纏め に書き込む
+# ① 検証: 資産クラスシート Summary の A～I, A～J 合計と突合
+# ═══════════════════════════════════════════════════════════
+print(f'\n=== 検証: Total(不動産除く) = A～I合計 ===')
+ai_keys = [k for k in totals if not any(x in k for x in excl_keys)]
+sum_ai = sum(totals[k] for k in ai_keys)
+diff_excl = abs(total_excl - sum_ai)
+if diff_excl < 1:
+    print(f'  ✓ 一致: {total_excl:,.0f}')
+else:
+    print(f'  ✗ 差異あり: Total={total_excl:,.0f}, A-I合計={sum_ai:,.0f}, 差={diff_excl:,.0f}')
+
+print(f'=== 検証: Total(不動産含む) = A～J合計 ===')
+sum_aj = sum_ai + sec_j
+diff_incl = abs(total_incl - sum_aj)
+if diff_incl < 1:
+    print(f'  ✓ 一致: {total_incl:,.0f}')
+else:
+    print(f'  ✗ 差異あり: Total={total_incl:,.0f}, A-J合計={sum_aj:,.0f}, 差={diff_incl:,.0f}')
+
+# ═══════════════════════════════════════════════════════════
+# ② 資産クラスシートの Summary テーブルを検索してセル参照を構築
+# ═══════════════════════════════════════════════════════════
+def find_summary_links(ws_formula, sheet_name):
+    """
+    資産クラスシートの Summary テーブル (col5='Summary') を探し、
+    ラベル → Excel セル参照式の辞書を返す。
+    例: {'円建て現預金': "='資産クラス20260429'!G146", ...}
+    特殊キー '__total_ai__' / '__total_aj__' に A-I / A-J 合計行の参照も含む。
+    """
+    header_row = None
+    for r in range(130, min(ws_formula.max_row + 1, 250)):
+        v5 = str(ws_formula.cell(row=r, column=5).value or '').strip()
+        v7 = str(ws_formula.cell(row=r, column=7).value or '').strip()
+        if v5 == 'Summary' and v7 == '時価合計':
+            header_row = r
+            break
+    if not header_row:
+        print('  [WARN] Summary テーブルが見つかりません → 直接値で書き込み')
+        return None
+
+    from openpyxl.utils import get_column_letter
+    col_g = get_column_letter(7)   # G列 = col7 = 時価合計
+    safe  = f"'{sheet_name}'"      # シート名をシングルクォートで囲む
+
+    links = {}
+    for r in range(header_row + 1, header_row + 40):
+        v5 = str(ws_formula.cell(row=r, column=5).value or '').strip()
+        v6 = str(ws_formula.cell(row=r, column=6).value or '').strip()
+        if v5 in list('ABCDEFGHIJ') and v6:
+            links[v6] = f'={safe}!{col_g}{r}'
+        elif 'A～I' in v6 or '合計（A～I' in v6:
+            links['__total_ai__'] = f'={safe}!{col_g}{r}'
+        elif 'A～J' in v6 or '合計（A～J' in v6:
+            links['__total_aj__'] = f'={safe}!{col_g}{r}'
+
+    print(f'  Summary テーブル発見 (header=row{header_row}), {len(links)} リンクを構築')
+    for lbl, ref in links.items():
+        print(f'    {lbl}: {ref}')
+    return links
+
+print('\n=== Summary リンク構築 ===')
+summary_links = find_summary_links(ws_f, SN_NEW)
+
+# ── 計算済み値を JSON に保存 (gen_dashboard.py のフォールバック用) ──────
+import json as _json
+_totals_for_json = dict(totals)
+_totals_for_json['Total(不動産除く）'] = round(total_excl)
+_totals_for_json['Total(不動産含む）'] = round(total_incl)
+_json_obj = {
+    'date':   TARGET_DATE.isoformat(),
+    'sheet':  SN_NEW,
+    'values': {k: round(v) for k, v in _totals_for_json.items()}
+}
+_json_path = os.path.join(BASE_DIR, '_latest_totals.json')
+with open(_json_path, 'w', encoding='utf-8') as _jf:
+    _json.dump(_json_obj, _jf, ensure_ascii=False, indent=2)
+print(f'  → JSON保存: {_json_path}  ({len(_json_obj["values"])} 項目)')
+
+# ═══════════════════════════════════════════════════════════
+# ③ 資産推移纏め に書き込む
 # ═══════════════════════════════════════════════════════════
 wb2 = openpyxl.load_workbook(tmp)
 ws_ts2 = wb2[TS_SHEET]
@@ -454,10 +533,6 @@ ws_ts2.cell(row=2, column=target_col).value = datetime(
 
 total_label_excl = next((k for k in ts_row_map if 'Total' in k and ('除く' in k or 'excl' in k.lower())), None)
 total_label_incl = next((k for k in ts_row_map if 'Total' in k and '含む' in k), None)
-if total_label_excl:
-    totals[total_label_excl] = round(total_excl)
-if total_label_incl:
-    totals[total_label_incl] = round(total_incl)
 
 written = []
 for r in range(2, ws_ts2.max_row + 1):
@@ -465,14 +540,49 @@ for r in range(2, ws_ts2.max_row + 1):
     if not lbl:
         continue
     lbl_s = str(lbl).strip()
-    if lbl_s in totals:
+
+    # Total(不動産除く) → Summary の 合計(A～I) セルにリンク
+    if lbl_s == total_label_excl:
+        if summary_links and '__total_ai__' in summary_links:
+            cell_val = summary_links['__total_ai__']
+            ws_ts2.cell(row=r, column=target_col).value = cell_val
+            written.append((r, lbl_s, cell_val))
+        else:
+            ws_ts2.cell(row=r, column=target_col).value = round(total_excl)
+            written.append((r, lbl_s, round(total_excl)))
+        continue
+
+    # Total(不動産含む) → Summary の 合計(A～J) セルにリンク
+    if lbl_s == total_label_incl:
+        if summary_links and '__total_aj__' in summary_links:
+            cell_val = summary_links['__total_aj__']
+            ws_ts2.cell(row=r, column=target_col).value = cell_val
+            written.append((r, lbl_s, cell_val))
+        else:
+            ws_ts2.cell(row=r, column=target_col).value = round(total_incl)
+            written.append((r, lbl_s, round(total_incl)))
+        continue
+
+    # REIT: 常に 0 (Summary テーブルに存在しない)
+    if 'REIT' in lbl_s:
+        ws_ts2.cell(row=r, column=target_col).value = 0
+        written.append((r, lbl_s, 0))
+        continue
+
+    # 各資産クラス → Summary テーブルの G 列セルにリンク
+    if summary_links and lbl_s in summary_links:
+        cell_val = summary_links[lbl_s]
+        ws_ts2.cell(row=r, column=target_col).value = cell_val
+        written.append((r, lbl_s, cell_val))
+    elif lbl_s in totals:
+        # フォールバック: 直接値
         val = round(totals[lbl_s])
         ws_ts2.cell(row=r, column=target_col).value = val
         written.append((r, lbl_s, val))
 
 print(f'書き込んだ行:')
 for r, lbl, v in written:
-    print(f'  row{r} "{lbl}": {v:,.0f}')
+    print(f'  row{r} "{lbl}": {v}')
 
 wb2.save(tmp)
 try:
