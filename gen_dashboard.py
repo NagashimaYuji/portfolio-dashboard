@@ -4,20 +4,8 @@ gen_dashboard.py
 ポートフォリオダッシュボード HTML を生成する
 """
 
-import os, sys, json, re, hashlib
+import os, sys, json, re
 from datetime import datetime
-
-# ──────────────────────────────────────────────────────────
-# パスワード設定
-#   DASHBOARD_PASSWORD : ダッシュボード閲覧パスワード (UI から変更可)
-#   ADMIN_PASSWORD     : 管理者専用パスワード (UIから変更不可・要再デプロイ)
-#                        管理者: NagashimaYuji <yna786@gmail.com>
-# ──────────────────────────────────────────────────────────
-DASHBOARD_PASSWORD = 'Corazon2026'
-ADMIN_PASSWORD     = 'yna786@gmail.com'   # 変更する場合はここを書き換えて再デプロイ
-
-_pw_hash    = hashlib.sha256(DASHBOARD_PASSWORD.encode('utf-8')).hexdigest()
-_admin_hash = hashlib.sha256(ADMIN_PASSWORD.encode('utf-8')).hexdigest()
 
 if sys.stdout.encoding and sys.stdout.encoding.lower() in ('cp932', 'shift_jis', 'shift-jis'):
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
@@ -630,14 +618,6 @@ html = f'''<!DOCTYPE html>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
 <style>
 body{{font-family:"Meiryo","Yu Gothic",sans-serif;background:#f0f2f5;font-size:.88rem;}}
-#auth-overlay{{position:fixed;inset:0;background:linear-gradient(135deg,#1a1a2e 0%,#16213e 50%,#0f3460 100%);z-index:99999;display:flex;align-items:center;justify-content:center;}}
-#auth-box{{background:#fff;border-radius:18px;padding:2.8rem 2.4rem;width:340px;text-align:center;box-shadow:0 24px 64px rgba(0,0,0,.55);}}
-#auth-box h4{{color:#1a1a2e;font-weight:700;margin-bottom:1.6rem;letter-spacing:.02em;}}
-#pw-input{{width:100%;padding:.65rem 1rem;border:2px solid #dee2e6;border-radius:9px;font-size:1rem;outline:none;transition:border .2s;margin-bottom:1rem;}}
-#pw-input:focus{{border-color:#0d6efd;}}
-#pw-btn{{width:100%;padding:.65rem;background:linear-gradient(135deg,#0d6efd,#6610f2);color:#fff;border:none;border-radius:9px;font-size:1rem;font-weight:600;cursor:pointer;transition:opacity .2s;}}
-#pw-btn:hover{{opacity:.88;}}
-#pw-err{{color:#dc3545;margin-top:.8rem;font-size:.88rem;display:none;}}
 .navbar-brand{{font-size:1.1rem;}}
 .chart-tall{{height:400px;}}
 .chart-md{{height:280px;}}
@@ -654,151 +634,11 @@ body{{font-family:"Meiryo","Yu Gothic",sans-serif;background:#f0f2f5;font-size:.
 </head>
 <body>
 
-<!-- ▼ 認証オーバーレイ -->
-<div id="auth-overlay">
-  <div id="auth-box">
-    <div style="font-size:2.8rem;margin-bottom:.4rem;">🔐</div>
-    <h4>資産ポートフォリオ<br>ダッシュボード</h4>
-    <input type="password" id="pw-input" placeholder="パスワードを入力"
-           onkeydown="if(event.key==='Enter')checkPw()">
-    <button id="pw-btn" onclick="checkPw()">ログイン</button>
-    <p id="pw-err">パスワードが違います。もう一度お試しください。</p>
-  </div>
-</div>
 
-<!-- ▼ パスワード変更モーダル -->
-<div class="modal fade" id="changePwModal" tabindex="-1" aria-labelledby="changePwModalLabel" aria-hidden="true">
-  <div class="modal-dialog modal-dialog-centered" style="max-width:380px;">
-    <div class="modal-content border-0 shadow-lg rounded-4">
-      <div class="modal-header border-0 pb-0">
-        <h5 class="modal-title fw-bold" id="changePwModalLabel">🔑 パスワード変更</h5>
-        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-      </div>
-      <div class="modal-body pt-2">
-        <div class="alert alert-info py-2 small mb-3">
-          🔒 パスワード変更は管理者のみ実行できます。
-        </div>
-        <div class="mb-3">
-          <label class="form-label small fw-semibold">管理者パスワード</label>
-          <input type="password" class="form-control" id="cp-admin" placeholder="管理者パスワードを入力">
-        </div>
-        <hr class="my-2">
-        <div class="mb-3">
-          <label class="form-label small fw-semibold">新しいパスワード</label>
-          <input type="password" class="form-control" id="cp-new" placeholder="新しいパスワード (4文字以上)">
-        </div>
-        <div class="mb-3">
-          <label class="form-label small fw-semibold">新しいパスワード（確認）</label>
-          <input type="password" class="form-control" id="cp-confirm" placeholder="もう一度入力">
-        </div>
-        <div id="cp-err" class="alert alert-danger py-2 small d-none"></div>
-        <div id="cp-ok"  class="alert alert-success py-2 small d-none">✅ パスワードを変更しました</div>
-      </div>
-      <div class="modal-footer border-0 pt-0">
-        <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">キャンセル</button>
-        <button type="button" class="btn btn-primary btn-sm fw-semibold" onclick="doChangePw()">変更を保存</button>
-      </div>
-    </div>
-  </div>
-</div>
-<!-- ▲ パスワード変更モーダル -->
-
-<script>
-// ── 認証ロジック ─────────────────────────────────────────
-const DEFAULT_HASH = '{_pw_hash}';   // DASHBOARD_PASSWORD のハッシュ
-const ADMIN_HASH   = '{_admin_hash}'; // 管理者専用ハッシュ (UIから変更不可)
-
-// localStorageにカスタムハッシュがあればそちらを優先
-function getActiveHash() {{
-  return localStorage.getItem('pf_pw_hash') || DEFAULT_HASH;
-}}
-
-async function sha256(str) {{
-  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
-  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,'0')).join('');
-}}
-
-// セッション内で認証済みならオーバーレイを即非表示
-if (sessionStorage.getItem('pf_auth') === '1') {{
-  document.getElementById('auth-overlay').style.display = 'none';
-}}
-
-async function checkPw() {{
-  const pw  = document.getElementById('pw-input').value;
-  const hex = await sha256(pw);
-  if (hex === getActiveHash()) {{
-    sessionStorage.setItem('pf_auth', '1');
-    document.getElementById('auth-overlay').style.display = 'none';
-  }} else {{
-    const err = document.getElementById('pw-err');
-    err.style.display = 'block';
-    document.getElementById('pw-input').value = '';
-    document.getElementById('pw-input').focus();
-    setTimeout(() => err.style.display = 'none', 3000);
-  }}
-}}
-
-// ── パスワード変更 (管理者のみ) ───────────────────────────
-async function doChangePw() {{
-  const admin   = document.getElementById('cp-admin').value;
-  const nw      = document.getElementById('cp-new').value;
-  const confirm = document.getElementById('cp-confirm').value;
-  const errEl   = document.getElementById('cp-err');
-  const okEl    = document.getElementById('cp-ok');
-  errEl.classList.add('d-none');
-  okEl.classList.add('d-none');
-
-  // バリデーション
-  if (!admin || !nw || !confirm) {{
-    errEl.textContent = 'すべての項目を入力してください。'; errEl.classList.remove('d-none'); return;
-  }}
-  if (nw.length < 4) {{
-    errEl.textContent = '新しいパスワードは4文字以上にしてください。'; errEl.classList.remove('d-none'); return;
-  }}
-  if (nw !== confirm) {{
-    errEl.textContent = '新しいパスワードが一致しません。'; errEl.classList.remove('d-none'); return;
-  }}
-
-  // 管理者パスワード確認
-  const adminHash = await sha256(admin);
-  if (adminHash !== ADMIN_HASH) {{
-    errEl.textContent = '管理者パスワードが違います。変更できません。'; errEl.classList.remove('d-none'); return;
-  }}
-
-  // 新パスワードを保存
-  const newHash = await sha256(nw);
-  localStorage.setItem('pf_pw_hash', newHash);
-  okEl.classList.remove('d-none');
-
-  // フォームリセット & 2秒後にモーダルを閉じる
-  ['cp-admin','cp-new','cp-confirm'].forEach(id => document.getElementById(id).value = '');
-  setTimeout(() => bootstrap.Modal.getInstance(document.getElementById('changePwModal')).hide(), 2000);
-}}
-
-// モーダルを開くたびにフォームをリセット
-document.addEventListener('DOMContentLoaded', () => {{
-  const modal = document.getElementById('changePwModal');
-  if (modal) {{
-    modal.addEventListener('show.bs.modal', () => {{
-      ['cp-admin','cp-new','cp-confirm'].forEach(id => document.getElementById(id).value = '');
-      document.getElementById('cp-err').classList.add('d-none');
-      document.getElementById('cp-ok').classList.add('d-none');
-    }});
-  }}
-  document.getElementById('pw-input').focus();
-}});
-</script>
-<!-- ▲ 認証スクリプトここまで -->
 
 <nav class="navbar navbar-dark bg-dark px-3 py-2">
   <span class="navbar-brand fw-bold">📊 資産ポートフォリオ ダッシュボード</span>
-  <div class="d-flex align-items-center gap-3">
-    <span class="text-light small">{upd_date} &nbsp;|&nbsp; USD/JPY: {usdjpy:.2f}</span>
-    <button class="btn btn-outline-light btn-sm py-0 px-2 small"
-            data-bs-toggle="modal" data-bs-target="#changePwModal">
-      🔑 パスワード変更
-    </button>
-  </div>
+  <span class="text-light small">{upd_date} &nbsp;|&nbsp; USD/JPY: {usdjpy:.2f}</span>
 </nav>
 
 <div class="container-fluid px-3 py-3">
