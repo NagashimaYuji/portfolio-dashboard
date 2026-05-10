@@ -160,7 +160,7 @@ body{font-family:"Meiryo","Yu Gothic",sans-serif;background:#f0f2f5;font-size:.8
           <div class="table-responsive">
             <table class="table table-hover table-sm table-bordered small" id="table-E">
               <thead class="table-dark"><tr><th>名前</th><th>金融機関</th><th>銘柄</th><th>時価単価</th><th>時価総額</th><th>購入単価</th><th>口数</th><th>購入総額</th><th>操作</th></tr></thead>
-              <tbody></tbody>
+              <tbody><tr data-row='56'><td>Fumi</td><td>SMBC</td><td>ARES Capital (Private Credit)</td><td class='text-end'></td><td class='text-end'></td><td class='text-end'>97.21</td><td class='text-end'></td><td class='text-end'></td><td><button class='btn btn-xs btn-outline-primary py-0 px-1 edit-btn' onclick='startEdit(this)'>編集</button><button class='btn btn-xs btn-success py-0 px-1 save-btn d-none' onclick='saveEdit(this)'>保存</button><button class='btn btn-xs btn-secondary py-0 px-1 cancel-btn d-none' onclick='cancelEdit(this)'>取消</button></td></tr></tbody>
             </table>
           </div></div><div class="tab-pane fade" id="secF" role="tabpanel">
           <div class="d-flex justify-content-between align-items-center my-2">
@@ -231,7 +231,7 @@ const CLS_VALUES   = [97.77, 16.84, 1.0, 285.39, 58.95, 77.94, 275.46, 10.66, 0.
 const TOT_LABELS   = ["Total(不動産除く）", "Total(不動産含む）"];
 const TOT_VALUES   = [830.91, 1000.91];
 const PERS_LABELS  = ["Yuji", "Fumie", "Mina", "Akatsuki"];
-const PERS_VALUES  = [23.94, 24.54, 6.31, 49.87];
+const PERS_VALUES  = [311.15, 367.69, 22.88, 129.19];
 const UDLABELS     = ["USD建て資産(円換算)", "円建て資産"];
 const UDVALUES     = [560.85, 270.06];
 const LIQUID_TOTAL = 830.91;  // 流動資産 = Total(不動産除く)
@@ -348,13 +348,16 @@ new Chart(document.getElementById('persChart'),{
   tb.innerHTML+=`<tr class="table-secondary fw-bold"><td>総資産（不動産含む）</td><td class="text-end">${TOTAL_INCL.toFixed(1)}</td><td class="text-end">—</td></tr>`;
 })();
 
-// 人別テーブル (比率は流動資産ベース)
+// 人別テーブル (比率は流動資産(不動産除く)ベース)
 (function(){
   const tb=document.getElementById('per-body');
+  let persSum=0;
   PERS_LABELS.forEach((l,i)=>{
     const v=PERS_VALUES[i]||0;
-    tb.innerHTML+=`<tr><td>${l}</td><td class="text-end">${v.toFixed(1)}</td><td class="text-end">${LIQUID_TOTAL>0?(v/LIQUID_TOTAL*100).toFixed(1):'—'}%</td></tr>`;
+    persSum+=v;
+    tb.innerHTML+=`<tr><td>${l}</td><td class="text-end">${v.toFixed(1)}</td><td class="text-end fw-semibold">${LIQUID_TOTAL>0?(v/LIQUID_TOTAL*100).toFixed(1):'—'}%</td></tr>`;
   });
+  tb.innerHTML+=`<tr class="table-dark fw-bold"><td>合計</td><td class="text-end">${persSum.toFixed(1)}</td><td class="text-end">${LIQUID_TOTAL>0?(persSum/LIQUID_TOTAL*100).toFixed(1):'—'}%</td></tr>`;
 })();
 
 // ── 編集機能 ──────────────────────────────────────────

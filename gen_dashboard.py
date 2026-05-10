@@ -69,6 +69,12 @@ def resolve_cell(sheet_name, row, col, max_depth=4):
     if m_s:
         return resolve_cell(sheet_name, int(m_s.group(2)),
                             _col_idx(m_s.group(1).upper()), max_depth - 1)
+    # 数値算術式: 7*20, 10*20, 100+50 など (セル参照なし)
+    if _re.fullmatch(r'[\d\s\+\-\*\/\(\)\.]+', expr):
+        try:
+            return float(eval(expr))  # noqa: S307 – 数字と演算子のみ許可
+        except Exception:
+            pass
     return None
 
 def resolve_formula_value(formula_str, _unused_ws=None, max_depth=4):
@@ -180,6 +186,10 @@ for r in range(1, ws_sn.max_row+1):
         if current not in sections:
             sections[current] = {'label': c3, 'header_row': None, 'data_rows': []}
             sec_order.append(current)
+        # セクションヘッダー行自体にデータがある場合 (例: E行にPrivate Creditデータ)
+        d_hdr = ws_sn.cell(row=r, column=4).value
+        if d_hdr is not None and str(d_hdr).strip() not in ('名前', ''):
+            sections[current]['data_rows'].append(r)
     elif current:
         # 小計行 (C列が '小計') → セクション終端
         if c3 == '小計':
@@ -296,11 +306,13 @@ for sk in sec_order:
 # ──────────────────────────────────────────────────────────
 # 2-c. 人別合計
 # ──────────────────────────────────────────────────────────
+# H列(時価総額)は数式セルでキャッシュがないため、価格×口数×FXから直接計算する
+# ──────────────────────────────────────────────────────────
 PERSON_MAP = {
     'yuji': 'Yuji', 'ゆうじ': 'Yuji',
     'fumi': 'Fumie', 'fumie': 'Fumie', 'ふみえ': 'Fumie',
     'mina': 'Mina', 'みな': 'Mina',
-    'akatsuki': 'Akatsuki', 'あかつき': 'Akatsuki',
+    'akatsuki': 'Akatsuki', 'akasuki': 'Akatsuki', 'あかつき': 'Akatsuki',  # akasuki = typo in Excel
 }
 
 def get_person(name_str):
@@ -310,30 +322,125 @@ def get_person(name_str):
             return v
     return None
 
+def cell_num(r, c, follow_ref=True):
+    """data_only → formula直接値 → セル参照解決 の順で数値を取得"""
+    v = wb[SN_SHEET].cell(row=r, column=c).value
+    if isinstance(v, (int, float)):
+        return float(v)
+    v2 = wb_formula[SN_SHEET].cell(row=r, column=c).value
+    if isinstance(v2, (int, float)):
+        return float(v2)
+    # 数式参照を追跡 (=G72, =I49 等)
+    if follow_ref and isinstance(v2, str) and v2.startswith('='):
+        resolved = resolve_cell(SN_SHEET, r, c, max_depth=3)
+        if resolved is not None:
+            return resolved
+    return None
+
 person_totals = {'Yuji': 0.0, 'Fumie': 0.0, 'Mina': 0.0, 'Akatsuki': 0.0}
 
-# セクションA: F列 = 金額(円)
+# A: 円建て現預金 → col6(F)=残高(円) 直接値
 for rd in detail.get('A', {}).get('rows', []):
     p = get_person(rd.get('name',''))
-    if p and rd.get('value') is not None:
-        person_totals[p] += rd['value']
+    v = rd.get('value')
+    if p and v:
+        person_totals[p] += v
 
-# セクションB: I列 = 円換算 (jpy_amount)
+# B: 外貨現預金 → fx_amount(col7) × rate(col8)
 for rd in detail.get('B', {}).get('rows', []):
     p = get_person(rd.get('name',''))
-    if p and rd.get('jpy_amount') is not None:
-        person_totals[p] += rd['jpy_amount']
+    if p:
+        fx   = rd.get('fx_amount') or cell_num(rd['row'], 7)
+        rate = rd.get('rate')      or cell_num(rd['row'], 8) or usdjpy
+        if fx and rate:
+            person_totals[p] += fx * rate
 
-# セクションC-J: value (H列 = 時価総額)
-# Excelの数式で既に円換算済み → そのまま加算
-for sk in ['C','D','E','F','G','H','I']:
-    for rd in detail.get(sk, {}).get('rows', []):
-        p = get_person(rd.get('name',''))
-        v = rd.get('value')
-        if p and v is not None:
+# C: 円建て社債 → col7(G)=評価額(円)
+for rd in detail.get('C', {}).get('rows', []):
+    p = get_person(rd.get('name',''))
+    if p:
+        v = rd.get('price') or cell_num(rd['row'], 7)
+        if v:
             person_totals[p] += v
 
+# D: US$建て社債 → col9(I=評価単価) × USDJPY × col12(L=額面)
+# ※ L列は日付書式で保存された数値の場合がある → Excelシリアル変換
+from openpyxl.utils.datetime import to_excel as _dte
+from datetime import datetime as _dt
+def _face_val(r):
+    v = cell_num(r, 12)
+    if v is None:
+        raw = wb_formula[SN_SHEET].cell(row=r, column=12).value
+        if isinstance(raw, _dt):
+            try: v = float(_dte(raw))
+            except Exception: pass
+    return v
+
+for rd in detail.get('D', {}).get('rows', []):
+    p = get_person(rd.get('name',''))
+    if p:
+        price_pct = rd.get('cost_unit') or cell_num(rd['row'], 9)
+        face      = _face_val(rd['row'])
+        if price_pct and face:
+            person_totals[p] += price_pct * usdjpy * face
+
+# E: Private Credit → col9(I=評価単価) × USDJPY × col12(L=額面)
+for rd in detail.get('E', {}).get('rows', []):
+    p = get_person(rd.get('name',''))
+    if p:
+        price_pct = rd.get('cost_unit') or cell_num(rd['row'], 9)
+        face      = _face_val(rd['row'])
+        if price_pct and face:
+            person_totals[p] += price_pct * usdjpy * face
+
+# F: 投資信託 → 時価単価(col7) × qty(col10) [× USDJPY if USD ETF]
+# ※ col9=購入単価(コスト)なので col7(時価)を優先
+for rd in detail.get('F', {}).get('rows', []):
+    p = get_person(rd.get('name',''))
+    if p:
+        price = cell_num(rd['row'], 7) or cell_num(rd['row'], 9)
+        qty   = rd.get('quantity') or cell_num(rd['row'], 10)
+        if price and qty:
+            n_fml = wb_formula[SN_SHEET].cell(row=rd['row'], column=14).value
+            is_usd = n_fml and 'H29' in str(n_fml).replace('$', '')
+            person_totals[p] += price * qty * (usdjpy if is_usd else 1.0)
+
+# G: 日本株 → col7(G=単価 JPY) × col10(J=口数)
+for rd in detail.get('G', {}).get('rows', []):
+    p = get_person(rd.get('name',''))
+    if p:
+        price = rd.get('price') or cell_num(rd['row'], 7)
+        qty   = rd.get('quantity') or cell_num(rd['row'], 10)
+        if price and qty:
+            person_totals[p] += price * qty
+
+# H: 米国株 → col7(G=USD単価) × col10(J=口数) × USDJPY
+# ※ 副ポジション行 (=G93 等の数式参照) も cell_num の follow_ref で解決
+# ※ 口数が算術式 (=7*20 等) の場合は数値として評価される (resolve_cell 内)
+for rd in detail.get('H', {}).get('rows', []):
+    p = get_person(rd.get('name',''))
+    if p:
+        price = rd.get('price') or cell_num(rd['row'], 7)
+        qty   = rd.get('quantity') or cell_num(rd['row'], 10)
+        if price and qty:
+            person_totals[p] += price * qty * usdjpy
+
+# I: 事業投資 → col8(H) キャッシュ or col7(G=単価)×col10(J=口数)
+for rd in detail.get('I', {}).get('rows', []):
+    p = get_person(rd.get('name',''))
+    if p:
+        v = rd.get('value') or cell_num(rd['row'], 8)
+        if v is None:
+            price = cell_num(rd['row'], 7)
+            qty   = cell_num(rd['row'], 10)
+            if price and qty:
+                v = price * qty
+        if v:
+            person_totals[p] += v
+
+pers_sum = sum(person_totals.values())
 print(f'  人別合計: {person_totals}')
+print(f'  人別合計計: {pers_sum:,.0f}')
 
 # ──────────────────────────────────────────────────────────
 # 2-d. 資産クラス別合計 → 資産推移纏め の最新データ列から
@@ -857,13 +964,16 @@ new Chart(document.getElementById('persChart'),{{
   tb.innerHTML+=`<tr class="table-secondary fw-bold"><td>総資産（不動産含む）</td><td class="text-end">${{TOTAL_INCL.toFixed(1)}}</td><td class="text-end">—</td></tr>`;
 }})();
 
-// 人別テーブル (比率は流動資産ベース)
+// 人別テーブル (比率は流動資産(不動産除く)ベース)
 (function(){{
   const tb=document.getElementById('per-body');
+  let persSum=0;
   PERS_LABELS.forEach((l,i)=>{{
     const v=PERS_VALUES[i]||0;
-    tb.innerHTML+=`<tr><td>${{l}}</td><td class="text-end">${{v.toFixed(1)}}</td><td class="text-end">${{LIQUID_TOTAL>0?(v/LIQUID_TOTAL*100).toFixed(1):'—'}}%</td></tr>`;
+    persSum+=v;
+    tb.innerHTML+=`<tr><td>${{l}}</td><td class="text-end">${{v.toFixed(1)}}</td><td class="text-end fw-semibold">${{LIQUID_TOTAL>0?(v/LIQUID_TOTAL*100).toFixed(1):'—'}}%</td></tr>`;
   }});
+  tb.innerHTML+=`<tr class="table-dark fw-bold"><td>合計</td><td class="text-end">${{persSum.toFixed(1)}}</td><td class="text-end">${{LIQUID_TOTAL>0?(persSum/LIQUID_TOTAL*100).toFixed(1):'—'}}%</td></tr>`;
 }})();
 
 // ── 編集機能 ──────────────────────────────────────────
