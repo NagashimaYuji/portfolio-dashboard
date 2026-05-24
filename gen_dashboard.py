@@ -222,6 +222,21 @@ print(f'  セクション: {[(k, sections[k]["label"], len(sections[k]["data_row
 # セクションI (事業投資):  個別カラム違う可能性あり
 # セクションJ (自宅不動産): 個別
 
+def cell_num(r, c, follow_ref=True):
+    """data_only → formula直接値 → セル参照解決 の順で数値を取得"""
+    v = wb[SN_SHEET].cell(row=r, column=c).value
+    if isinstance(v, (int, float)):
+        return float(v)
+    v2 = wb_formula[SN_SHEET].cell(row=r, column=c).value
+    if isinstance(v2, (int, float)):
+        return float(v2)
+    # 数式参照を追跡 (=G72, =I49 等)
+    if follow_ref and isinstance(v2, str) and v2.startswith('='):
+        resolved = resolve_cell(SN_SHEET, r, c, max_depth=3)
+        if resolved is not None:
+            return resolved
+    return None
+
 def extract_sec_a(rows):
     """円建て現預金: D=名前, E=金融機関, F=金額"""
     out = []
@@ -234,22 +249,76 @@ def extract_sec_a(rows):
     return out
 
 def extract_sec_b(rows):
-    """外貨現預金: D=名前, E=金融機関, F=通貨, G=外貨額, H=レート, I=円換算"""
+    """外貨現預金:
+    col4=名前, col5=金融機関, col9=通貨テキスト, col7=外貨金額, col8=為替レート(formula chain)
+    col6 is JPY formula (=H*G) → None in data_only
+    """
     out = []
     for r in rows:
-        name  = sv(r, 4)
-        inst  = sv(r, 5)
-        ccy   = sv(r, 6)
-        fx_amt = fv(r, 7)
-        rate  = fv(r, 8)
-        jpy   = fv(r, 9)
+        name   = sv(r, 4)
+        inst   = sv(r, 5)
+        ccy    = sv(r, 9)   # col9 = 通貨テキスト ('US$', 'RMB')
+        fx_amt = fv(r, 7)   # col7 = 外貨金額(直接値)
+        # col8 = 為替レート: =H29 or =H30→H29 等 (最大4段階チェーン) → depth=6 で解決
+        rate   = cell_num(r, 8)
+        if rate is None:
+            rate = resolve_cell(SN_SHEET, r, 8, max_depth=6)
+        if rate is None and ccy == 'US$':
+            rate = usdjpy  # フォールバック
+        jpy    = round(fx_amt * rate) if fx_amt and rate else None
         out.append({'row':r,'name':name,'institution':inst,'currency':ccy,
                     'fx_amount':fx_amt,'rate':rate,'jpy_amount':jpy,
                     'quantity':fx_amt,'cost_unit':rate,'cost_total':jpy,'price':rate,'value':jpy})
     return out
 
+def extract_sec_c(rows):
+    """円建て社債:
+    col4=名前, col5=金融機関, col6=銘柄, col7=評価総額(直接値), col11=購入総額(直接値)
+    """
+    out = []
+    for r in rows:
+        name       = sv(r, 4)
+        inst       = sv(r, 5)
+        brand      = sv(r, 6)
+        eval_total = fv(r, 7)    # col7 = 評価総額(直接値)
+        purch_total= fv(r, 11)   # col11 = 購入総額(直接値)
+        gain = round(eval_total - purch_total) if (eval_total is not None and purch_total is not None) else None
+        out.append({'row':r,'name':name,'institution':inst,'brand':brand,
+                    'eval_total':eval_total,'purch_total':purch_total,'gain':gain,
+                    'price':None,'value':eval_total,'cost_unit':None,'cost_total':purch_total,'quantity':None})
+    return out
+
+def extract_sec_d(rows):
+    """US$建て社債:
+    col4=名前, col5=金融機関, col6=銘柄
+    col9=評価単価%(直接値), col10=直近為替(formula=H29), col12=額面数量(直接値)
+    col13=購入総額(直接値 or formula), col15=購入時為替(直接値)
+    """
+    out = []
+    for r in rows:
+        name      = sv(r, 4)
+        inst      = sv(r, 5)
+        brand     = sv(r, 6)
+        eval_pct  = cell_num(r, 9)          # 評価単価%
+        fx        = cell_num(r, 10) or usdjpy  # 直近為替 (formula=H29 解決)
+        face      = cell_num(r, 12)          # 額面数量
+        purch_total = cell_num(r, 13)        # 購入総額 (直接値 or formula)
+        purch_fx  = fv(r, 15)               # col15 = 購入時為替 (直接値)
+        # col13 が formula の場合: =N*O*L = col14(購入単価%) × col15(購入時為替) × col12(額面)
+        if purch_total is None:
+            p_pct = fv(r, 14)   # col14 = 購入単価%
+            if p_pct and purch_fx and face:
+                purch_total = round(p_pct * purch_fx * face)
+        eval_total = round(eval_pct * fx * face) if (eval_pct and fx and face) else None
+        gain = round(eval_total - purch_total) if (eval_total is not None and purch_total is not None) else None
+        out.append({'row':r,'name':name,'institution':inst,'brand':brand,
+                    'eval_price':eval_pct,'fx':fx,'face':face,
+                    'eval_total':eval_total,'purch_total':purch_total,'gain':gain,'purch_fx':purch_fx,
+                    'price':eval_pct,'value':eval_total,'cost_unit':None,'cost_total':purch_total,'quantity':face})
+    return out
+
 def extract_sec_generic(rows):
-    """汎用: D=名前, E=金融機関, F=銘柄, G=時価単価, H=時価総額, I=購入単価, J=口数, K=購入総額"""
+    """汎用 (E/I/J): D=名前, E=金融機関, F=銘柄, G=時価単価, H=時価総額, I=購入単価, J=口数, K=購入総額"""
     out = []
     for r in rows:
         name   = sv(r, 4)
@@ -264,17 +333,89 @@ def extract_sec_generic(rows):
                     'quantity':qty,'cost_unit':c_unit,'cost_total':c_tot,'price':price,'value':value})
     return out
 
-def extract_sec_ab_special(rows):
-    """AB米国成長株投信など: D=名前, E=金融機関, F=銘柄, I=時価単価, J=口数"""
+def extract_sec_f_full(rows):
+    """投資信託:
+    col7=評価単価(直接値 or formula), col9=購入単価, col10=数量, col14=直近為替formula($H$29=USD)
+    col8=評価総額(formula=G*J or G*J*N → None), col11=購入合計(formula → None)
+    """
+    out = []
+    for r in rows:
+        name       = sv(r, 4)
+        inst       = sv(r, 5)
+        brand      = sv(r, 6)
+        eval_price = cell_num(r, 7)          # 評価単価 (follow formula ref)
+        purch_price= fv(r, 9) or cell_num(r, 9)  # 購入単価
+        qty        = fv(r, 10) or cell_num(r, 10)  # 数量
+        # col14 に =$H$29 が入っていればUSD建て
+        n_fml = wb_formula[SN_SHEET].cell(row=r, column=14).value
+        is_usd = isinstance(n_fml, str) and 'H29' in n_fml.replace('$', '')
+        fx = usdjpy if is_usd else None
+        # 評価総額: キャッシュ優先、なければ計算
+        eval_total = cell_num(r, 8)
+        if eval_total is None and eval_price and qty:
+            eval_total = round(eval_price * qty * (usdjpy if is_usd else 1.0))
+        # 購入合計: キャッシュ優先、なければ計算
+        purch_fx_val = fv(r, 15) or usdjpy if is_usd else None
+        purch_total = cell_num(r, 11)
+        if purch_total is None and purch_price and qty:
+            purch_total = round(purch_price * qty * (purch_fx_val if is_usd else 1.0))
+        gain = round(eval_total - purch_total) if (eval_total is not None and purch_total is not None) else None
+        out.append({'row':r,'name':name,'institution':inst,'brand':brand,
+                    'eval_price':eval_price,'fx':fx,'quantity':qty,
+                    'eval_total':eval_total,'purch_total':purch_total,'gain':gain,
+                    'price':eval_price,'value':eval_total,'cost_unit':purch_price,'cost_total':purch_total})
+    return out
+
+def extract_sec_g(rows):
+    """日本株:
+    col7=時価単価(直接値), col8=時価総額(formula=G*J → None)
+    col9=購入単価(直接値 or formula), col10=口数(直接値 or formula), col11=購入総額(formula → None)
+    """
     out = []
     for r in rows:
         name   = sv(r, 4)
         inst   = sv(r, 5)
         brand  = sv(r, 6)
-        price  = fv(r, 9)
-        qty    = fv(r, 10)
+        price  = fv(r, 7) or cell_num(r, 7)
+        c_unit = cell_num(r, 9)   # 購入単価 (formula解決)
+        qty    = cell_num(r, 10)  # 口数 (formula解決: =7*20 等)
+        value  = cell_num(r, 8)
+        if value is None and price and qty:
+            value = round(price * qty)
+        c_tot = cell_num(r, 11)
+        if c_tot is None and c_unit and qty:
+            c_tot = round(c_unit * qty)
+        gain = round(value - c_tot) if (value is not None and c_tot is not None) else None
         out.append({'row':r,'name':name,'institution':inst,'brand':brand,
-                    'quantity':qty,'cost_unit':None,'cost_total':None,'price':price,'value':None})
+                    'price':price,'quantity':qty,'value':value,
+                    'cost_unit':c_unit,'cost_total':c_tot,'gain':gain})
+    return out
+
+def extract_sec_h(rows):
+    """米国株:
+    col7=USD単価(直接値 or formula=Gxx), col8=時価総額(formula=G*J*N → None)
+    col9=購入単価(直接値 or formula), col10=口数(直接値 or formula)
+    col11=購入総額(formula → None), col15=購入時為替(直接値)
+    """
+    out = []
+    for r in rows:
+        name    = sv(r, 4)
+        inst    = sv(r, 5)
+        brand   = sv(r, 6)
+        price   = fv(r, 7) or cell_num(r, 7)   # USD単価 (formula解決)
+        c_unit  = cell_num(r, 9)                # 購入単価
+        qty     = cell_num(r, 10)               # 口数 (formula解決)
+        purch_fx= fv(r, 15)                     # 購入時為替
+        value   = cell_num(r, 8)
+        if value is None and price and qty:
+            value = round(price * qty * usdjpy)
+        c_tot = cell_num(r, 11)
+        if c_tot is None and c_unit and qty:
+            c_tot = round(c_unit * qty * (purch_fx or usdjpy))
+        gain = round(value - c_tot) if (value is not None and c_tot is not None) else None
+        out.append({'row':r,'name':name,'institution':inst,'brand':brand,
+                    'price':price,'quantity':qty,'value':value,
+                    'cost_unit':c_unit,'cost_total':c_tot,'gain':gain,'purch_fx':purch_fx})
     return out
 
 # セクションFは投資信託 (AB米国成長株 = cols 9,10)
@@ -294,11 +435,18 @@ for sk in sec_order:
         rows_data = extract_sec_a(rows)
     elif sk == 'B':
         rows_data = extract_sec_b(rows)
-    elif sk in ('C','D','E','G','H','I','J'):
+    elif sk == 'C':
+        rows_data = extract_sec_c(rows)
+    elif sk == 'D':
+        rows_data = extract_sec_d(rows)
+    elif sk == 'E':
         rows_data = extract_sec_generic(rows)
     elif sk == 'F':
-        # 投資信託は AB米国成長株 形式 (cols 9,10)
-        rows_data = extract_sec_ab_special(rows)
+        rows_data = extract_sec_f_full(rows)
+    elif sk == 'G':
+        rows_data = extract_sec_g(rows)
+    elif sk == 'H':
+        rows_data = extract_sec_h(rows)
     else:
         rows_data = extract_sec_generic(rows)
     detail[sk] = {'label': lbl, 'rows': rows_data}
@@ -322,21 +470,6 @@ def get_person(name_str):
             return v
     return None
 
-def cell_num(r, c, follow_ref=True):
-    """data_only → formula直接値 → セル参照解決 の順で数値を取得"""
-    v = wb[SN_SHEET].cell(row=r, column=c).value
-    if isinstance(v, (int, float)):
-        return float(v)
-    v2 = wb_formula[SN_SHEET].cell(row=r, column=c).value
-    if isinstance(v2, (int, float)):
-        return float(v2)
-    # 数式参照を追跡 (=G72, =I49 等)
-    if follow_ref and isinstance(v2, str) and v2.startswith('='):
-        resolved = resolve_cell(SN_SHEET, r, c, max_depth=3)
-        if resolved is not None:
-            return resolved
-    return None
-
 person_totals = {'Yuji': 0.0, 'Fumie': 0.0, 'Mina': 0.0, 'Akatsuki': 0.0}
 
 # A: 円建て現預金 → col6(F)=残高(円) 直接値
@@ -346,25 +479,25 @@ for rd in detail.get('A', {}).get('rows', []):
     if p and v:
         person_totals[p] += v
 
-# B: 外貨現預金 → fx_amount(col7) × rate(col8)
+# B: 外貨現預金 → fx_amount(col7) × rate (col8, formula chain解決済み)
 for rd in detail.get('B', {}).get('rows', []):
     p = get_person(rd.get('name',''))
     if p:
         fx   = rd.get('fx_amount') or cell_num(rd['row'], 7)
-        rate = rd.get('rate')      or cell_num(rd['row'], 8) or usdjpy
+        rate = rd.get('rate') or cell_num(rd['row'], 8) or usdjpy
         if fx and rate:
             person_totals[p] += fx * rate
 
-# C: 円建て社債 → col7(G)=評価額(円)
+# C: 円建て社債 → eval_total (col7=評価総額、直接値)
 for rd in detail.get('C', {}).get('rows', []):
     p = get_person(rd.get('name',''))
     if p:
-        v = rd.get('price') or cell_num(rd['row'], 7)
+        v = rd.get('eval_total') or cell_num(rd['row'], 7)
         if v:
             person_totals[p] += v
 
-# D: US$建て社債 → col9(I=評価単価) × USDJPY × col12(L=額面)
-# ※ L列は日付書式で保存された数値の場合がある → Excelシリアル変換
+# D: US$建て社債 → extract_sec_d で計算済みの eval_total を使用
+# ※ フォールバックとして評価単価(col9) × USDJPY × 額面(col12) も試みる
 from openpyxl.utils.datetime import to_excel as _dte
 from datetime import datetime as _dt
 def _face_val(r):
@@ -379,10 +512,14 @@ def _face_val(r):
 for rd in detail.get('D', {}).get('rows', []):
     p = get_person(rd.get('name',''))
     if p:
-        price_pct = rd.get('cost_unit') or cell_num(rd['row'], 9)
-        face      = _face_val(rd['row'])
-        if price_pct and face:
-            person_totals[p] += price_pct * usdjpy * face
+        v = rd.get('eval_total')
+        if v is None:
+            price_pct = cell_num(rd['row'], 9)
+            face      = _face_val(rd['row'])
+            if price_pct and face:
+                v = price_pct * usdjpy * face
+        if v:
+            person_totals[p] += v
 
 # E: Private Credit → col9(I=評価単価) × USDJPY × col12(L=額面)
 for rd in detail.get('E', {}).get('rows', []):
@@ -393,37 +530,46 @@ for rd in detail.get('E', {}).get('rows', []):
         if price_pct and face:
             person_totals[p] += price_pct * usdjpy * face
 
-# F: 投資信託 → 時価単価(col7) × qty(col10) [× USDJPY if USD ETF]
-# ※ col9=購入単価(コスト)なので col7(時価)を優先
+# F: 投資信託 → extract_sec_f_full で計算済みの eval_total を使用
 for rd in detail.get('F', {}).get('rows', []):
     p = get_person(rd.get('name',''))
     if p:
-        price = cell_num(rd['row'], 7) or cell_num(rd['row'], 9)
-        qty   = rd.get('quantity') or cell_num(rd['row'], 10)
-        if price and qty:
-            n_fml = wb_formula[SN_SHEET].cell(row=rd['row'], column=14).value
-            is_usd = n_fml and 'H29' in str(n_fml).replace('$', '')
-            person_totals[p] += price * qty * (usdjpy if is_usd else 1.0)
+        v = rd.get('eval_total')
+        if v is None:
+            price = cell_num(rd['row'], 7) or cell_num(rd['row'], 9)
+            qty   = rd.get('quantity') or cell_num(rd['row'], 10)
+            if price and qty:
+                n_fml = wb_formula[SN_SHEET].cell(row=rd['row'], column=14).value
+                is_usd = n_fml and 'H29' in str(n_fml).replace('$', '')
+                v = price * qty * (usdjpy if is_usd else 1.0)
+        if v:
+            person_totals[p] += v
 
-# G: 日本株 → col7(G=単価 JPY) × col10(J=口数)
+# G: 日本株 → extract_sec_g で計算済みの value を使用
 for rd in detail.get('G', {}).get('rows', []):
     p = get_person(rd.get('name',''))
     if p:
-        price = rd.get('price') or cell_num(rd['row'], 7)
-        qty   = rd.get('quantity') or cell_num(rd['row'], 10)
-        if price and qty:
-            person_totals[p] += price * qty
+        v = rd.get('value')
+        if v is None:
+            price = rd.get('price') or cell_num(rd['row'], 7)
+            qty   = rd.get('quantity') or cell_num(rd['row'], 10)
+            if price and qty:
+                v = price * qty
+        if v:
+            person_totals[p] += v
 
-# H: 米国株 → col7(G=USD単価) × col10(J=口数) × USDJPY
-# ※ 副ポジション行 (=G93 等の数式参照) も cell_num の follow_ref で解決
-# ※ 口数が算術式 (=7*20 等) の場合は数値として評価される (resolve_cell 内)
+# H: 米国株 → extract_sec_h で計算済みの value を使用
 for rd in detail.get('H', {}).get('rows', []):
     p = get_person(rd.get('name',''))
     if p:
-        price = rd.get('price') or cell_num(rd['row'], 7)
-        qty   = rd.get('quantity') or cell_num(rd['row'], 10)
-        if price and qty:
-            person_totals[p] += price * qty * usdjpy
+        v = rd.get('value')
+        if v is None:
+            price = rd.get('price') or cell_num(rd['row'], 7)
+            qty   = rd.get('quantity') or cell_num(rd['row'], 10)
+            if price and qty:
+                v = price * qty * usdjpy
+        if v:
+            person_totals[p] += v
 
 # I: 事業投資 → col8(H) キャッシュ or col7(G=単価)×col10(J=口数)
 for rd in detail.get('I', {}).get('rows', []):
@@ -586,6 +732,12 @@ TOTAL_SERIES   = [l for l in ts_labels_order if '合計' in l]
 datasets_main  = mk_datasets(DISPLAY_SERIES, ts_series)
 datasets_total = mk_datasets(TOTAL_SERIES,   ts_series)
 
+# 評価損益の色付けヘルパー
+def gain_cls(v):
+    if v is None:
+        return ''
+    return ' text-success fw-semibold' if v > 0 else ' text-danger fw-semibold'
+
 # 詳細タブ HTML
 def mk_sec_tabs():
     nav = ''
@@ -602,52 +754,86 @@ def mk_sec_tabs():
         # ヘッダー列の決定
         if sk == 'A':
             heads = ['名前', '金融機関', '金額(円)']
-            def row_html(rd):
-                return f"<td>{rd.get('name','')}</td><td>{rd.get('institution','')}</td><td class='text-end'>{fmt_num(rd.get('value'))}</td>"
         elif sk == 'B':
-            heads = ['名前', '金融機関', '通貨', '外貨額', 'レート', '円換算']
-            def row_html(rd):
-                return (f"<td>{rd.get('name','')}</td><td>{rd.get('institution','')}</td>"
-                        f"<td>{rd.get('currency','')}</td>"
-                        f"<td class='text-end'>{fmt_num(rd.get('fx_amount'))}</td>"
-                        f"<td class='text-end'>{fmt_num(rd.get('rate'))}</td>"
-                        f"<td class='text-end'>{fmt_num(rd.get('jpy_amount'))}</td>")
+            heads = ['名前', '金融機関', '通貨', '外貨額', '為替レート', '円換算']
+        elif sk == 'C':
+            heads = ['名前', '金融機関', '銘柄', '評価総額', '購入合計', '評価損益']
+        elif sk == 'D':
+            heads = ['名前', '金融機関', '銘柄', '評価単価(%)', '直近為替', '額面', '評価総額', '購入合計', '評価損益']
         elif sk == 'F':
-            heads = ['名前', '金融機関', '銘柄', '時価単価', '口数']
-            def row_html(rd):
-                return (f"<td>{rd.get('name','')}</td><td>{rd.get('institution','')}</td>"
-                        f"<td>{rd.get('brand','')}</td>"
-                        f"<td class='text-end'>{fmt_num(rd.get('price'))}</td>"
-                        f"<td class='text-end'>{fmt_num(rd.get('quantity'))}</td>")
+            heads = ['名前', '金融機関', '銘柄', '評価単価', '直近為替', '数量', '評価総額', '購入合計', '評価損益']
+        elif sk == 'G':
+            heads = ['名前', '金融機関', '銘柄', '時価単価', '口数', '時価総額', '購入単価', '購入総額', '評価損益']
+        elif sk == 'H':
+            heads = ['名前', '金融機関', '銘柄', '時価単価(USD)', '直近為替', '口数', '時価総額', '購入単価(USD)', '購入総額', '評価損益']
         else:
+            # E/I/J generic
             heads = ['名前', '金融機関', '銘柄', '時価単価', '時価総額', '購入単価', '口数', '購入総額']
-            def row_html(rd):
-                return (f"<td>{rd.get('name','')}</td><td>{rd.get('institution','')}</td>"
-                        f"<td>{rd.get('brand','')}</td>"
-                        f"<td class='text-end'>{fmt_num(rd.get('price'))}</td>"
-                        f"<td class='text-end'>{fmt_num(rd.get('value'))}</td>"
-                        f"<td class='text-end'>{fmt_num(rd.get('cost_unit'))}</td>"
-                        f"<td class='text-end'>{fmt_num(rd.get('quantity'))}</td>"
-                        f"<td class='text-end'>{fmt_num(rd.get('cost_total'))}</td>")
 
         thead = ''.join(f'<th>{h}</th>' for h in heads)
         tbody = ''
         for rd in sec['rows']:
-            # row_html は sk に依存するクロージャ問題を避けるためインライン展開
+            # row_html はクロージャ問題を避けるためインライン展開
             if sk == 'A':
-                cells = f"<td>{rd.get('name','')}</td><td>{rd.get('institution','')}</td><td class='text-end'>{fmt_num(rd.get('value'))}</td>"
+                cells = (f"<td>{rd.get('name','')}</td><td>{rd.get('institution','')}</td>"
+                         f"<td class='text-end'>{fmt_num(rd.get('value'))}</td>")
             elif sk == 'B':
                 cells = (f"<td>{rd.get('name','')}</td><td>{rd.get('institution','')}</td>"
                          f"<td>{rd.get('currency','')}</td>"
                          f"<td class='text-end'>{fmt_num(rd.get('fx_amount'))}</td>"
                          f"<td class='text-end'>{fmt_num(rd.get('rate'))}</td>"
                          f"<td class='text-end'>{fmt_num(rd.get('jpy_amount'))}</td>")
+            elif sk == 'C':
+                g = rd.get('gain')
+                cells = (f"<td>{rd.get('name','')}</td><td>{rd.get('institution','')}</td>"
+                         f"<td>{rd.get('brand','')}</td>"
+                         f"<td class='text-end'>{fmt_num(rd.get('eval_total'))}</td>"
+                         f"<td class='text-end'>{fmt_num(rd.get('purch_total'))}</td>"
+                         f"<td class='text-end{gain_cls(g)}'>{fmt_num(g)}</td>")
+            elif sk == 'D':
+                g = rd.get('gain')
+                cells = (f"<td>{rd.get('name','')}</td><td>{rd.get('institution','')}</td>"
+                         f"<td>{rd.get('brand','')}</td>"
+                         f"<td class='text-end'>{fmt_num(rd.get('eval_price'))}</td>"
+                         f"<td class='text-end'>{fmt_num(rd.get('fx'))}</td>"
+                         f"<td class='text-end'>{fmt_num(rd.get('face'))}</td>"
+                         f"<td class='text-end'>{fmt_num(rd.get('eval_total'))}</td>"
+                         f"<td class='text-end'>{fmt_num(rd.get('purch_total'))}</td>"
+                         f"<td class='text-end{gain_cls(g)}'>{fmt_num(g)}</td>")
             elif sk == 'F':
+                g = rd.get('gain')
+                fx_disp = fmt_num(rd.get('fx')) if rd.get('fx') else '&#x2015;'
+                cells = (f"<td>{rd.get('name','')}</td><td>{rd.get('institution','')}</td>"
+                         f"<td>{rd.get('brand','')}</td>"
+                         f"<td class='text-end'>{fmt_num(rd.get('eval_price'))}</td>"
+                         f"<td class='text-end'>{fx_disp}</td>"
+                         f"<td class='text-end'>{fmt_num(rd.get('quantity'))}</td>"
+                         f"<td class='text-end'>{fmt_num(rd.get('eval_total'))}</td>"
+                         f"<td class='text-end'>{fmt_num(rd.get('purch_total'))}</td>"
+                         f"<td class='text-end{gain_cls(g)}'>{fmt_num(g)}</td>")
+            elif sk == 'G':
+                g = rd.get('gain')
                 cells = (f"<td>{rd.get('name','')}</td><td>{rd.get('institution','')}</td>"
                          f"<td>{rd.get('brand','')}</td>"
                          f"<td class='text-end'>{fmt_num(rd.get('price'))}</td>"
-                         f"<td class='text-end'>{fmt_num(rd.get('quantity'))}</td>")
+                         f"<td class='text-end'>{fmt_num(rd.get('quantity'))}</td>"
+                         f"<td class='text-end'>{fmt_num(rd.get('value'))}</td>"
+                         f"<td class='text-end'>{fmt_num(rd.get('cost_unit'))}</td>"
+                         f"<td class='text-end'>{fmt_num(rd.get('cost_total'))}</td>"
+                         f"<td class='text-end{gain_cls(g)}'>{fmt_num(g)}</td>")
+            elif sk == 'H':
+                g = rd.get('gain')
+                cells = (f"<td>{rd.get('name','')}</td><td>{rd.get('institution','')}</td>"
+                         f"<td>{rd.get('brand','')}</td>"
+                         f"<td class='text-end'>{fmt_num(rd.get('price'))}</td>"
+                         f"<td class='text-end'>{fmt_num(usdjpy)}</td>"
+                         f"<td class='text-end'>{fmt_num(rd.get('quantity'))}</td>"
+                         f"<td class='text-end'>{fmt_num(rd.get('value'))}</td>"
+                         f"<td class='text-end'>{fmt_num(rd.get('cost_unit'))}</td>"
+                         f"<td class='text-end'>{fmt_num(rd.get('cost_total'))}</td>"
+                         f"<td class='text-end{gain_cls(g)}'>{fmt_num(g)}</td>")
             else:
+                # E/I/J generic
                 cells = (f"<td>{rd.get('name','')}</td><td>{rd.get('institution','')}</td>"
                          f"<td>{rd.get('brand','')}</td>"
                          f"<td class='text-end'>{fmt_num(rd.get('price'))}</td>"
