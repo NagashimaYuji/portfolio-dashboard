@@ -800,6 +800,63 @@ def gain_cls(v):
         return ''
     return ' text-success fw-semibold' if v > 0 else ' text-danger fw-semibold'
 
+def _sum_key(rows, key):
+    """rows から key の合計を返す (None は無視)"""
+    vals = [rd.get(key) for rd in rows if rd.get(key) is not None]
+    return sum(vals) if vals else None
+
+def mk_tfoot(sk, rows):
+    """各セクションの合計フッター行 HTML を生成"""
+    if not rows:
+        return ''
+    # セクション別に集計キーと列構造を定義
+    # 各要素: ('text'|'num'|'gain'|'skip', value_or_text)
+    def td_sum(v, cls=''):
+        if v is None:
+            return f"<td></td>"
+        return f"<td class='text-end fw-bold{cls}'>{fmt_num(v)}</td>"
+
+    lbl_td = "<td class='fw-bold'>合計</td>"
+    dash_td = "<td></td>"
+
+    if sk == 'A':
+        t = _sum_key(rows, 'value')
+        foot = lbl_td + dash_td + td_sum(t)
+    elif sk == 'B':
+        t = _sum_key(rows, 'jpy_amount')
+        foot = lbl_td + dash_td + dash_td + dash_td + dash_td + td_sum(t)
+    elif sk == 'C':
+        et = _sum_key(rows, 'eval_total')
+        pt = _sum_key(rows, 'purch_total')
+        g  = _sum_key(rows, 'gain')
+        foot = lbl_td + dash_td + dash_td + td_sum(et) + td_sum(pt) + td_sum(g, gain_cls(g))
+    elif sk in ('D', 'E'):
+        et = _sum_key(rows, 'eval_total')
+        pt = _sum_key(rows, 'purch_total')
+        g  = _sum_key(rows, 'gain')
+        foot = lbl_td + dash_td + dash_td + dash_td + dash_td + dash_td + td_sum(et) + td_sum(pt) + td_sum(g, gain_cls(g))
+    elif sk == 'F':
+        et = _sum_key(rows, 'eval_total')
+        pt = _sum_key(rows, 'purch_total')
+        g  = _sum_key(rows, 'gain')
+        foot = lbl_td + dash_td + dash_td + dash_td + dash_td + dash_td + td_sum(et) + td_sum(pt) + td_sum(g, gain_cls(g))
+    elif sk == 'G':
+        vt  = _sum_key(rows, 'value')
+        ct  = _sum_key(rows, 'cost_total')
+        g   = _sum_key(rows, 'gain')
+        foot = lbl_td + dash_td + dash_td + dash_td + dash_td + td_sum(vt) + dash_td + td_sum(ct) + td_sum(g, gain_cls(g))
+    elif sk == 'H':
+        vt  = _sum_key(rows, 'value')
+        ct  = _sum_key(rows, 'cost_total')
+        g   = _sum_key(rows, 'gain')
+        foot = lbl_td + dash_td + dash_td + dash_td + dash_td + dash_td + td_sum(vt) + dash_td + td_sum(ct) + td_sum(g, gain_cls(g))
+    else:
+        vt = _sum_key(rows, 'value')
+        ct = _sum_key(rows, 'cost_total')
+        foot = lbl_td + dash_td + dash_td + dash_td + td_sum(vt) + dash_td + dash_td + td_sum(ct)
+
+    return f"<tfoot class='table-secondary'><tr>{foot}<td></td></tr></tfoot>"
+
 # 詳細タブ HTML
 def mk_sec_tabs():
     nav = ''
@@ -906,6 +963,8 @@ def mk_sec_tabs():
 
             tbody += f"<tr data-row='{rd['row']}'>{cells}<td><button class='btn btn-xs btn-outline-primary py-0 px-1 edit-btn' onclick='startEdit(this)'>編集</button><button class='btn btn-xs btn-success py-0 px-1 save-btn d-none' onclick='saveEdit(this)'>保存</button><button class='btn btn-xs btn-secondary py-0 px-1 cancel-btn d-none' onclick='cancelEdit(this)'>取消</button></td></tr>"
 
+        tfoot = mk_tfoot(sk, sec['rows'])
+
         nav += f'<li class="nav-item"><button class="nav-link{active} py-1 px-2" id="{tab_id}-tab" data-bs-toggle="tab" data-bs-target="#{tab_id}" type="button">{sk}: {lbl}</button></li>'
         content += f'''<div class="tab-pane fade{show}" id="{tab_id}" role="tabpanel">
           <div class="d-flex justify-content-between align-items-center my-2">
@@ -916,6 +975,7 @@ def mk_sec_tabs():
             <table class="table table-hover table-sm table-bordered small" id="table-{sk}">
               <thead class="table-dark"><tr>{thead}<th>操作</th></tr></thead>
               <tbody>{tbody}</tbody>
+              {tfoot}
             </table>
           </div></div>'''
 
@@ -985,6 +1045,7 @@ body{{font-family:"Meiryo","Yu Gothic",sans-serif;background:#f0f2f5;font-size:.
 #toast-box{{position:fixed;bottom:18px;right:18px;z-index:9999;}}
 .btn-xs{{font-size:.72rem;line-height:1.2;}}
 .table-sm td,.table-sm th{{padding:.25rem .4rem;}}
+tfoot.table-secondary td{{background:#e9ecef;border-top:2px solid #6c757d;font-size:.85rem;}}
 </style>
 </head>
 <body>
