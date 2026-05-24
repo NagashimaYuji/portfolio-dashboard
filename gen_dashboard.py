@@ -237,6 +237,26 @@ def cell_num(r, c, follow_ref=True):
             return resolved
     return None
 
+def resolve_sum_col(r, c):
+    """=SUM(XN:XM) 形式の数式を評価する (cell_num が解決できない SUM 範囲式の処理)"""
+    v = cell_num(r, c)
+    if v is not None:
+        return v
+    f = wb_formula[SN_SHEET].cell(row=r, column=c).value
+    if not isinstance(f, str):
+        return None
+    m = _re.fullmatch(r'=SUM\(([A-Z]+)(\d+):([A-Z]+)(\d+)\)', f.strip(), _re.IGNORECASE)
+    if m:
+        sc = _col_idx(m.group(1).upper())
+        sr, er = int(m.group(2)), int(m.group(4))
+        total = 0.0
+        for rr in range(sr, er + 1):
+            vv = resolve_cell(SN_SHEET, rr, sc, max_depth=3)
+            if vv:
+                total += vv
+        return total if total > 0 else None
+    return None
+
 def extract_sec_a(rows):
     """円建て現預金: D=名前, E=金融機関, F=金額"""
     out = []
@@ -331,6 +351,44 @@ def extract_sec_generic(rows):
         c_tot  = fv(r, 11)
         out.append({'row':r,'name':name,'institution':inst,'brand':brand,
                     'quantity':qty,'cost_unit':c_unit,'cost_total':c_tot,'price':price,'value':value})
+    return out
+
+def extract_sec_e(rows):
+    """Private Credit (E): D セクションと同じ列構造
+    col9=評価単価%, col10=直近為替(=H29), col12=額面(datetimeシリアル or 数値)
+    col13=購入総額(formula), col14=購入単価%, col15=購入時為替
+    """
+    from openpyxl.utils.datetime import to_excel as _dte_e
+    from datetime import datetime as _dt_e
+    out = []
+    for r in rows:
+        name     = sv(r, 4)
+        inst     = sv(r, 5)
+        brand    = sv(r, 6)
+        eval_pct = cell_num(r, 9)
+        fx       = cell_num(r, 10) or usdjpy
+        # col12 = 額面 (Excel datetime シリアル or 数値)
+        face = cell_num(r, 12)
+        if face is None:
+            raw12 = wb_formula[SN_SHEET].cell(row=r, column=12).value
+            if isinstance(raw12, _dt_e):
+                try:
+                    face = float(_dte_e(raw12))
+                except Exception:
+                    pass
+        purch_fx    = fv(r, 15)
+        purch_total = cell_num(r, 13)
+        if purch_total is None:
+            p_pct = fv(r, 14) or cell_num(r, 14)
+            if p_pct and purch_fx and face:
+                purch_total = round(p_pct * purch_fx * face)
+        eval_total = round(eval_pct * fx * face) if (eval_pct and fx and face) else None
+        gain = round(eval_total - purch_total) if (eval_total is not None and purch_total is not None) else None
+        out.append({'row': r, 'name': name, 'institution': inst, 'brand': brand,
+                    'eval_price': eval_pct, 'fx': fx, 'face': face,
+                    'eval_total': eval_total, 'purch_total': purch_total, 'gain': gain, 'purch_fx': purch_fx,
+                    'price': eval_pct, 'value': eval_total,
+                    'cost_unit': None, 'cost_total': purch_total, 'quantity': face})
     return out
 
 def extract_sec_f_full(rows):
@@ -440,7 +498,7 @@ for sk in sec_order:
     elif sk == 'D':
         rows_data = extract_sec_d(rows)
     elif sk == 'E':
-        rows_data = extract_sec_generic(rows)
+        rows_data = extract_sec_e(rows)
     elif sk == 'F':
         rows_data = extract_sec_f_full(rows)
     elif sk == 'G':
@@ -521,14 +579,18 @@ for rd in detail.get('D', {}).get('rows', []):
         if v:
             person_totals[p] += v
 
-# E: Private Credit → col9(I=評価単価) × USDJPY × col12(L=額面)
+# E: Private Credit → extract_sec_e で計算済みの eval_total を使用
 for rd in detail.get('E', {}).get('rows', []):
     p = get_person(rd.get('name',''))
     if p:
-        price_pct = rd.get('cost_unit') or cell_num(rd['row'], 9)
-        face      = _face_val(rd['row'])
-        if price_pct and face:
-            person_totals[p] += price_pct * usdjpy * face
+        v = rd.get('eval_total')
+        if v is None:
+            price_pct = rd.get('eval_price') or cell_num(rd['row'], 9)
+            face      = rd.get('face') or _face_val(rd['row'])
+            if price_pct and face:
+                v = price_pct * usdjpy * face
+        if v:
+            person_totals[p] += v
 
 # F: 投資信託 → extract_sec_f_full で計算済みの eval_total を使用
 for rd in detail.get('F', {}).get('rows', []):
@@ -571,11 +633,11 @@ for rd in detail.get('H', {}).get('rows', []):
         if v:
             person_totals[p] += v
 
-# I: 事業投資 → col8(H) キャッシュ or col7(G=単価)×col10(J=口数)
+# I: 事業投資 → col8(H) キャッシュ or SUM式解決 or col7(G=単価)×col10(J=口数)
 for rd in detail.get('I', {}).get('rows', []):
     p = get_person(rd.get('name',''))
     if p:
-        v = rd.get('value') or cell_num(rd['row'], 8)
+        v = rd.get('value') or resolve_sum_col(rd['row'], 8)
         if v is None:
             price = cell_num(rd['row'], 7)
             qty   = cell_num(rd['row'], 10)
@@ -758,7 +820,7 @@ def mk_sec_tabs():
             heads = ['名前', '金融機関', '通貨', '外貨額', '為替レート', '円換算']
         elif sk == 'C':
             heads = ['名前', '金融機関', '銘柄', '評価総額', '購入合計', '評価損益']
-        elif sk == 'D':
+        elif sk in ('D', 'E'):
             heads = ['名前', '金融機関', '銘柄', '評価単価(%)', '直近為替', '額面', '評価総額', '購入合計', '評価損益']
         elif sk == 'F':
             heads = ['名前', '金融機関', '銘柄', '評価単価', '直近為替', '数量', '評価総額', '購入合計', '評価損益']
@@ -790,7 +852,7 @@ def mk_sec_tabs():
                          f"<td class='text-end'>{fmt_num(rd.get('eval_total'))}</td>"
                          f"<td class='text-end'>{fmt_num(rd.get('purch_total'))}</td>"
                          f"<td class='text-end{gain_cls(g)}'>{fmt_num(g)}</td>")
-            elif sk == 'D':
+            elif sk in ('D', 'E'):
                 g = rd.get('gain')
                 cells = (f"<td>{rd.get('name','')}</td><td>{rd.get('institution','')}</td>"
                          f"<td>{rd.get('brand','')}</td>"

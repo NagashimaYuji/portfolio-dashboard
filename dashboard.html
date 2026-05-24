@@ -159,8 +159,8 @@ body{font-family:"Meiryo","Yu Gothic",sans-serif;background:#f0f2f5;font-size:.8
           </div>
           <div class="table-responsive">
             <table class="table table-hover table-sm table-bordered small" id="table-E">
-              <thead class="table-dark"><tr><th>名前</th><th>金融機関</th><th>銘柄</th><th>時価単価</th><th>時価総額</th><th>購入単価</th><th>口数</th><th>購入総額</th><th>操作</th></tr></thead>
-              <tbody><tr data-row='56'><td>Fumi</td><td>SMBC</td><td>ARES Capital (Private Credit)</td><td class='text-end'></td><td class='text-end'></td><td class='text-end'>97.21</td><td class='text-end'></td><td class='text-end'></td><td><button class='btn btn-xs btn-outline-primary py-0 px-1 edit-btn' onclick='startEdit(this)'>編集</button><button class='btn btn-xs btn-success py-0 px-1 save-btn d-none' onclick='saveEdit(this)'>保存</button><button class='btn btn-xs btn-secondary py-0 px-1 cancel-btn d-none' onclick='cancelEdit(this)'>取消</button></td></tr></tbody>
+              <thead class="table-dark"><tr><th>名前</th><th>金融機関</th><th>銘柄</th><th>評価単価(%)</th><th>直近為替</th><th>額面</th><th>評価総額</th><th>購入合計</th><th>評価損益</th><th>操作</th></tr></thead>
+              <tbody><tr data-row='56'><td>Fumi</td><td>SMBC</td><td>ARES Capital (Private Credit)</td><td class='text-end'>97.21</td><td class='text-end'>159.16</td><td class='text-end'>700</td><td class='text-end'>10,830,020</td><td class='text-end'>10,722,127</td><td class='text-end text-success fw-semibold'>107,893</td><td><button class='btn btn-xs btn-outline-primary py-0 px-1 edit-btn' onclick='startEdit(this)'>編集</button><button class='btn btn-xs btn-success py-0 px-1 save-btn d-none' onclick='saveEdit(this)'>保存</button><button class='btn btn-xs btn-secondary py-0 px-1 cancel-btn d-none' onclick='cancelEdit(this)'>取消</button></td></tr></tbody>
             </table>
           </div></div><div class="tab-pane fade" id="secF" role="tabpanel">
           <div class="d-flex justify-content-between align-items-center my-2">
@@ -231,7 +231,7 @@ const CLS_VALUES   = [107.69, 25.27, 1.0, 288.64, 60.1, 76.72, 278.75, 10.83, 0.
 const TOT_LABELS   = ["Total(不動産除く）", "Total(不動産含む）"];
 const TOT_VALUES   = [873.89, 1043.89];
 const PERS_LABELS  = ["Yuji", "Fumie", "Mina", "Akatsuki"];
-const PERS_VALUES  = [322.38, 380.01, 22.98, 130.52];
+const PERS_VALUES  = [322.38, 398.01, 22.98, 130.52];
 const UDLABELS     = ["USD建て資産(円換算)", "円建て資産"];
 const UDVALUES     = [567.39, 306.51];
 const LIQUID_TOTAL = 873.89;  // 流動資産 = Total(不動産除く)
