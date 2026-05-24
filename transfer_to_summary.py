@@ -27,7 +27,7 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() in ('cp932', 'shift_jis',
 import openpyxl
 
 BASE_DIR   = r'C:\Users\yna78\OneDrive - Corazon\Yuji Private\資産ポートフォリオ戦略'
-EXCEL_FILE = os.path.join(BASE_DIR, '資産クラス整理_20260415.xlsx')
+EXCEL_FILE = os.path.join(BASE_DIR, '資産クラス整理_20260524.xlsx')
 
 TS_SHEET = '資産推移纏め'
 

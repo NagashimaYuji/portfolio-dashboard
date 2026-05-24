@@ -14,7 +14,7 @@ import openpyxl
 from openpyxl.utils import get_column_letter
 
 BASE_DIR   = r'C:\Users\yna78\OneDrive - Corazon\Yuji Private\資産ポートフォリオ戦略'
-EXCEL_FILE = os.path.join(BASE_DIR, '資産クラス整理_20260415.xlsx')
+EXCEL_FILE = os.path.join(BASE_DIR, '資産クラス整理_20260524.xlsx')
 OUT_HTML   = os.path.join(BASE_DIR, 'dashboard.html')
 
 TS_SHEET  = '資産推移纏め'
