@@ -1021,6 +1021,9 @@ total_incl = next(
     round(liquid_total + class_totals.get('自宅不動産', 0.0), 2)
 )
 total_incl_j = json.dumps(round(total_incl, 2))
+# 固定資産 = 総資産 − 流動資産
+fixed_total   = round(total_incl - liquid_total, 2)
+fixed_total_j = json.dumps(fixed_total)
 
 html = f'''<!DOCTYPE html>
 <html lang="ja">
@@ -1046,6 +1049,22 @@ body{{font-family:"Meiryo","Yu Gothic",sans-serif;background:#f0f2f5;font-size:.
 .btn-xs{{font-size:.72rem;line-height:1.2;}}
 .table-sm td,.table-sm th{{padding:.25rem .4rem;}}
 tfoot.table-secondary td{{background:#e9ecef;border-top:2px solid #6c757d;font-size:.85rem;}}
+/* 資産サマリーバー */
+.asb{{display:flex;align-items:stretch;background:linear-gradient(135deg,#1a1a2e,#16213e);color:#fff;gap:0;flex-wrap:wrap;}}
+.asb-main{{display:flex;align-items:center;justify-content:center;flex-direction:column;padding:.6rem 1.4rem;border-right:1px solid rgba(255,255,255,.15);}}
+.asb-main .val{{font-size:1.5rem;font-weight:800;color:#ffd700;letter-spacing:.02em;}}
+.asb-main .lbl{{font-size:.72rem;color:#adb5bd;margin-top:.1rem;}}
+.asb-eq{{display:flex;align-items:center;padding:0 .5rem;color:rgba(255,255,255,.5);font-size:1.1rem;}}
+.asb-sub{{display:flex;align-items:center;gap:1.2rem;padding:.6rem 1.2rem;flex-wrap:wrap;}}
+.asb-sub-item{{display:flex;flex-direction:column;align-items:center;}}
+.asb-sub-item .val{{font-size:1.15rem;font-weight:700;}}
+.asb-sub-item.liquid .val{{color:#4fc3f7;}}
+.asb-sub-item.fixed .val{{color:#ffb74d;}}
+.asb-sub-item .lbl{{font-size:.68rem;color:#adb5bd;}}
+.asb-divider{{width:1px;background:rgba(255,255,255,.15);margin:.4rem 0;}}
+.asb-detail{{display:flex;align-items:center;gap:1rem;padding:.5rem 1.2rem;flex-wrap:wrap;border-left:1px solid rgba(255,255,255,.15);margin-left:auto;}}
+.asb-detail-item{{font-size:.78rem;color:#ced4da;text-align:center;}}
+.asb-detail-item .val{{font-size:.92rem;font-weight:600;color:#e0e0e0;}}
 </style>
 </head>
 <body>
@@ -1056,6 +1075,40 @@ tfoot.table-secondary td{{background:#e9ecef;border-top:2px solid #6c757d;font-s
   <span class="navbar-brand fw-bold">📊 資産ポートフォリオ ダッシュボード</span>
   <span class="text-light small">{upd_date} &nbsp;|&nbsp; USD/JPY: {usdjpy:.2f}</span>
 </nav>
+
+<!-- ── 資産サマリーバー (全タブ共通) ── -->
+<div class="asb" id="asb">
+  <div class="asb-main">
+    <div class="val" id="asb-total">—</div>
+    <div class="lbl">資産合計（不動産含む）</div>
+  </div>
+  <div class="asb-eq">=</div>
+  <div class="asb-sub">
+    <div class="asb-sub-item liquid">
+      <div class="val" id="asb-liquid">—</div>
+      <div class="lbl">流動資産（不動産除く）</div>
+    </div>
+    <div class="asb-divider"></div>
+    <div class="asb-sub-item fixed">
+      <div class="val" id="asb-fixed">—</div>
+      <div class="lbl">固定資産（不動産）</div>
+    </div>
+  </div>
+  <div class="asb-detail">
+    <div class="asb-detail-item">
+      <div class="val" id="asb-usd">—</div>
+      <div>USD建て</div>
+    </div>
+    <div class="asb-detail-item">
+      <div class="val" id="asb-jpy">—</div>
+      <div>円建て</div>
+    </div>
+    <div class="asb-detail-item">
+      <div class="val">{usdjpy:.2f}</div>
+      <div>USD/JPY</div>
+    </div>
+  </div>
+</div>
 
 <div class="container-fluid px-3 py-3">
 <ul class="nav nav-tabs mb-3 fw-semibold" id="mainTab">
@@ -1099,6 +1152,28 @@ tfoot.table-secondary td{{background:#e9ecef;border-top:2px solid #6c757d;font-s
 
 <!-- ② サマリー -->
 <div class="tab-pane fade" id="tab-sum">
+  <!-- KPI上段: 資産合計・流動・固定 -->
+  <div class="row g-3 mb-2">
+    <div class="col-12 col-md-4">
+      <div class="kpi-card" style="border-top:4px solid #ffd700;">
+        <div class="kpi-val" style="color:#1a1a2e;" id="kpi-total">—</div>
+        <div class="kpi-lbl">💰 資産合計（不動産含む）</div>
+      </div>
+    </div>
+    <div class="col-6 col-md-4">
+      <div class="kpi-card" style="border-top:4px solid #4fc3f7;">
+        <div class="kpi-val" style="color:#0277bd;" id="kpi-liquid">—</div>
+        <div class="kpi-lbl">🌊 流動資産（不動産除く）</div>
+      </div>
+    </div>
+    <div class="col-6 col-md-4">
+      <div class="kpi-card" style="border-top:4px solid #ffb74d;">
+        <div class="kpi-val" style="color:#e65100;" id="kpi-fixed">—</div>
+        <div class="kpi-lbl">🏠 固定資産（不動産）</div>
+      </div>
+    </div>
+  </div>
+  <!-- KPI下段: USD・円建て・USDJPY -->
   <div class="row g-3 mb-3" id="kpi-row"></div>
   <div class="row g-3">
     <div class="col-lg-5">
@@ -1161,6 +1236,7 @@ const UDLABELS     = {usd_jpy_lbl};
 const UDVALUES     = {usd_jpy_val};
 const LIQUID_TOTAL = {liquid_total_j};  // 流動資産 = Total(不動産除く)
 const TOTAL_INCL   = {total_incl_j};   // 総資産   = Total(不動産含む)
+const FIXED_TOTAL  = {fixed_total_j};  // 固定資産 = 総資産 − 流動資産
 
 // ── 時系列チャート ─────────────────────────────────────
 const allDS = [...DS_MAIN, ...DS_TOTAL.map(d=>Object.assign({{}},d,{{borderWidth:2,fill:false,borderDash:[5,3],pointRadius:0}}))];
@@ -1216,16 +1292,27 @@ function toggleTotal(show){{
   }}
 }})();
 
-// ── サマリー KPI ──────────────────────────────────────
+// ── 資産サマリーバー & KPI 数値をセット ──────────────
 (function(){{
+  const fmt = v => v>=1 ? v.toFixed(1)+'M円' : (v*1000).toFixed(0)+'千円';
+  // サマリーバー
+  document.getElementById('asb-total').textContent  = fmt(TOTAL_INCL);
+  document.getElementById('asb-liquid').textContent = fmt(LIQUID_TOTAL);
+  document.getElementById('asb-fixed').textContent  = fmt(FIXED_TOTAL);
+  document.getElementById('asb-usd').textContent    = fmt(UDVALUES[0]);
+  document.getElementById('asb-jpy').textContent    = fmt(UDVALUES[1]);
+  // KPI上段カード
+  document.getElementById('kpi-total').textContent  = fmt(TOTAL_INCL);
+  document.getElementById('kpi-liquid').textContent = fmt(LIQUID_TOTAL);
+  document.getElementById('kpi-fixed').textContent  = fmt(FIXED_TOTAL);
+  // KPI下段カード
   const row=document.getElementById('kpi-row');
   [
-    ['流動資産 (不動産除く)', LIQUID_TOTAL.toFixed(1)+'M円'],
-    ['USD建て資産', UDVALUES[0].toFixed(1)+'M円'],
-    ['円建て資産',  UDVALUES[1].toFixed(1)+'M円'],
-    ['USDJPY', '{usdjpy:.2f}'],
-  ].forEach(([lbl,val])=>{{
-    row.innerHTML+=`<div class="col-6 col-md-3"><div class="kpi-card"><div class="kpi-val">${{val}}</div><div class="kpi-lbl">${{lbl}}</div></div></div>`;
+    ['USD建て資産', fmt(UDVALUES[0]),'#4e79a7'],
+    ['円建て資産',  fmt(UDVALUES[1]),'#e15759'],
+    ['USD/JPY',    '{usdjpy:.2f}',  '#59a14f'],
+  ].forEach(([lbl,val,clr])=>{{
+    row.innerHTML+=`<div class="col-6 col-md-4"><div class="kpi-card" style="border-top:4px solid ${{clr}}"><div class="kpi-val" style="color:${{clr}}">${{val}}</div><div class="kpi-lbl">${{lbl}}</div></div></div>`;
   }});
 }})();
 
