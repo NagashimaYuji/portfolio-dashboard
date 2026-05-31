@@ -24,8 +24,15 @@ from bs4 import BeautifulSoup
 import yfinance as yf
 import openpyxl
 
-BASE_DIR   = r'C:\Users\yna78\OneDrive - Corazon\Yuji Private\資産ポートフォリオ戦略'
-EXCEL_FILE = os.path.join(BASE_DIR, '資産クラス整理_20260524.xlsx')
+BASE_DIR = r'C:\Users\yna78\OneDrive - Corazon\Yuji Private\資産ポートフォリオ戦略'
+
+def find_latest_excel(base_dir: str) -> str:
+    """BASE_DIR 内の最新 資産クラス整理_YYYYMMDD.xlsx を返す"""
+    import glob
+    files = glob.glob(os.path.join(base_dir, '資産クラス整理_????????.xlsx'))
+    if not files:
+        raise FileNotFoundError(f'資産クラス整理_YYYYMMDD.xlsx が見つかりません: {base_dir}')
+    return max(files)  # 辞書順最大 = 最新日付
 
 def find_latest_sheet(wb) -> str:
     """直近の「資産クラスYYYYMMDD」シートを返す（今日のシートは除く）"""
@@ -165,18 +172,29 @@ def copy_worksheet(wb, source_name: str, dest_name: str):
 
 def main():
     today        = date.today()
-    new_sheet    = f'資産クラス{today.strftime("%Y%m%d")}'
+    today_str    = today.strftime('%Y%m%d')
+    new_sheet    = f'資産クラス{today_str}'
     update_label = f'更新日: {today.strftime("%Y/%m/%d")}'
 
-    print(f'=== update_stock.py 実行日: {today} ===')
-    print(f'ソースファイル: {EXCEL_FILE}')
+    # ソース: 最新の 資産クラス整理_YYYYMMDD.xlsx を自動検出
+    src_excel  = find_latest_excel(BASE_DIR)
+    # 出力: 今日付けの新ファイル
+    out_excel  = os.path.join(BASE_DIR, f'資産クラス整理_{today_str}.xlsx')
 
-    if not os.path.exists(EXCEL_FILE):
-        print(f'[ERROR] ファイルが見つかりません: {EXCEL_FILE}')
+    print(f'=== update_stock.py 実行日: {today} ===')
+    print(f'ソースファイル: {src_excel}')
+    print(f'出力ファイル  : {out_excel}')
+
+    if not os.path.exists(src_excel):
+        print(f'[ERROR] ファイルが見つかりません: {src_excel}')
         sys.exit(1)
 
-    tmp_path = EXCEL_FILE + '.tmp.xlsx'
-    shutil.copy2(EXCEL_FILE, tmp_path)
+    # 同日付きファイルが既に存在すれば警告
+    if os.path.exists(out_excel) and out_excel != src_excel:
+        print(f'[INFO] 既存の出力ファイルを上書きします: {out_excel}')
+
+    tmp_path = out_excel + '.tmp.xlsx'
+    shutil.copy2(src_excel, tmp_path)
 
     wb = openpyxl.load_workbook(tmp_path)
 
@@ -227,19 +245,16 @@ def main():
     # AB米国成長株投信: yfinance 非対応
     print('\n  [要手動更新] AB米国成長株投信(Hedgeなし) (G65): yfinance/Bloomberg 非対応')
 
-    # 保存
+    # 保存 → 今日付けの新ファイルとして出力
     wb.save(tmp_path)
 
     try:
-        if os.path.exists(EXCEL_FILE):
-            os.replace(tmp_path, EXCEL_FILE)
-        else:
-            shutil.move(tmp_path, EXCEL_FILE)
-        print(f'\n[OK] 保存完了: {EXCEL_FILE}')
-    except (PermissionError, OSError):
-        backup = os.path.join(BASE_DIR, f'資産整理_{today.strftime("%Y%m%d")}.xlsx')
-        shutil.move(tmp_path, backup)
-        print(f'\n[WARNING] 元ファイルが開かれているため別名で保存: {backup}')
+        os.replace(tmp_path, out_excel)
+        print(f'\n[OK] 保存完了: {out_excel}')
+    except (PermissionError, OSError) as e:
+        fallback = os.path.join(BASE_DIR, f'資産クラス整理_{today_str}_tmp.xlsx')
+        shutil.move(tmp_path, fallback)
+        print(f'\n[WARNING] 保存失敗 ({e}) → 別名で保存: {fallback}')
     print(f'  新しいシート: {new_sheet}')
 
 

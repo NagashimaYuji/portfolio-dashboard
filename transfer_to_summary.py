@@ -26,8 +26,18 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() in ('cp932', 'shift_jis',
 
 import openpyxl
 
-BASE_DIR   = r'C:\Users\yna78\OneDrive - Corazon\Yuji Private\資産ポートフォリオ戦略'
-EXCEL_FILE = os.path.join(BASE_DIR, '資産クラス整理_20260524.xlsx')
+BASE_DIR = r'C:\Users\yna78\OneDrive - Corazon\Yuji Private\資産ポートフォリオ戦略'
+
+def find_latest_excel(base_dir: str) -> str:
+    """BASE_DIR 内の最新 資産クラス整理_YYYYMMDD.xlsx を返す"""
+    import glob
+    files = glob.glob(os.path.join(base_dir, '資産クラス整理_????????.xlsx'))
+    if not files:
+        raise FileNotFoundError(f'資産クラス整理_YYYYMMDD.xlsx が見つかりません: {base_dir}')
+    return max(files)
+
+EXCEL_FILE = find_latest_excel(BASE_DIR)
+print(f'対象ファイル: {EXCEL_FILE}')
 
 TS_SHEET = '資産推移纏め'
 
