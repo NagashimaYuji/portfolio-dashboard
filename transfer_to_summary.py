@@ -109,6 +109,20 @@ def eval_cell(r, c, usdjpy):
     # H29 参照 → USDJPY
     if re.fullmatch(r'H29', expr, re.IGNORECASE):
         return usdjpy
+    # SUM(範囲) 形式 (例: =SUM(I127:I128)) → 範囲内セルを再帰評価して合計
+    m_sum = re.fullmatch(r'SUM\(([A-Z]+)(\d+):([A-Z]+)(\d+)\)', expr, re.IGNORECASE)
+    if m_sum:
+        from openpyxl.utils import column_index_from_string
+        sc = column_index_from_string(m_sum.group(1).upper())
+        ec = column_index_from_string(m_sum.group(3).upper())
+        sr, er = int(m_sum.group(2)), int(m_sum.group(4))
+        total = 0.0
+        for rr in range(sr, er + 1):
+            for cc in range(sc, ec + 1):
+                vv = eval_cell(rr, cc, usdjpy)
+                if vv:
+                    total += vv
+        return total if total else None
     # 単純セル参照 (例: =I49, =N53, =G75) → 参照先を評価
     m = re.fullmatch(r'([A-Z]+)(\d+)', expr, re.IGNORECASE)
     if m:
@@ -412,10 +426,12 @@ i_sub_row, i_data = scan_section('I')
 sec_i = cached(i_sub_row, 8) if i_sub_row else None
 i_label = next((k for k in ts_row_map if '事業' in k or '優先株' in k), '事業投資（優先株）')
 if not sec_i:
-    total_i = sum(
-        float(v) for r in i_data
-        if (v := formula_val(r, 8)) is not None and isinstance(v, (int, float)) and v > 0
-    )
+    # col8 は直接値 or =SUM(In:Im) 形式 → eval_cell で両対応
+    total_i = 0.0
+    for r in i_data:
+        v = eval_cell(r, 8, USDJPY_NEW)
+        if v and v > 0:
+            total_i += v
     sec_i = total_i if total_i > 0 else base_val(i_label)
     if total_i > 0:
         print(f'I 事業投資: {sec_i:,.0f}  (直接計算, 小計row={i_sub_row})')
