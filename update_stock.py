@@ -114,7 +114,13 @@ def get_price_yfinance(ticker: str) -> float | None:
     try:
         hist = yf.Ticker(ticker).history(period='5d')
         if not hist.empty:
-            return round(float(hist['Close'].iloc[-1]), 4)
+            # 当日分が未確定で NaN のことがあるため NaN を除外して直近終値を取る
+            closes = hist['Close'].dropna()
+            if not closes.empty:
+                price = round(float(closes.iloc[-1]), 4)
+                if price == price and price > 0:   # NaN / 0 ガード
+                    return price
+            print(f'  [WARN] yfinance {ticker}: 有効な終値なし (全て NaN)')
     except Exception as e:
         print(f'  [WARN] yfinance {ticker}: {e}')
     return None
@@ -221,12 +227,12 @@ def main():
     # VTI / VOO / QQQ (Bloomberg → yfinance フォールバック)
     for etf in ['VTI', 'VOO', 'QQQ']:
         price = get_bloomberg_etf_price(etf)
-        if price is not None:
+        if price is not None and price == price:   # NaN ガード
             for (row, col) in TICKER_CELLS[etf]:
                 ws.cell(row=row, column=col).value = price
             print(f'  {etf}: {price}')
         else:
-            print(f'  {etf}: 取得失敗 → スキップ')
+            print(f'  {etf}: 取得失敗 → スキップ (既存値を保持)')
 
     # yfinance (残りのティッカー)
     skip_etfs = {'VTI', 'VOO', 'QQQ'}
@@ -234,8 +240,8 @@ def main():
         if ticker in skip_etfs:
             continue
         price = get_price_yfinance(ticker)
-        if price is None:
-            print(f'  {ticker}: データ取得失敗 → スキップ')
+        if price is None or price != price:   # None / NaN は既存値を保持
+            print(f'  {ticker}: データ取得失敗 → スキップ (既存値を保持)')
             continue
         for (row, col) in cells:
             ws.cell(row=row, column=col).value = price
