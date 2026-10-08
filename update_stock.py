@@ -251,6 +251,11 @@ def main():
     # AB米国成長株投信: yfinance 非対応
     print('\n  [要手動更新] AB米国成長株投信(Hedgeなし) (G65): yfinance/Bloomberg 非対応')
 
+    # 名前別 資産クラス集計表 (SUMIF 数式) を新シートに書き込み
+    from person_summary import write_person_summary, TABLE_TOP
+    write_person_summary(ws)
+    print(f'\n名前別 資産クラス集計を書き込み (row{TABLE_TOP}〜)')
+
     # 保存 → 今日付けの新ファイルとして出力
     wb.save(tmp_path)
 
