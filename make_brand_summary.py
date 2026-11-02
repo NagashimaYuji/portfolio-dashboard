@@ -101,6 +101,9 @@ BRAND_ALIAS = {
     'GOLDMAN SACS': 'Goldman Sachs',
     'META': 'Meta',
     'MORGAN STANLEY': 'Morgan Stanley',
+    # 4/07〜4/19 シートの銘柄コード誤記 (同一銘柄の2行目)
+    'IHI（7014）': 'IHI（7013）',
+    '東京地下鉄（9024）': '東京地下鉄（9023）',
 }
 
 def norm_brand(name):
@@ -212,6 +215,40 @@ for key, label in SECTIONS:
     data, total = aggregate(key, rows)
     results[key] = {'label': label, 'data': data, 'total': total}
     print(f'{key} {label}: {len(rows)}行 → {len(data)}銘柄, 時価合計 {total:,.0f}')
+
+# ── 時系列: 全日付シートを銘柄別に集計 ─────────────────────────
+def load_sheet(sn):
+    """ev / sv / scan_section / aggregate の対象シートを切り替える"""
+    global ws_f, ws_c, USDJPY
+    ws_f, ws_c = wb_f[sn], wb_c[sn]
+    USDJPY = ev(29, 8) or 0.0
+
+def section_subtotal(key, rows):
+    """セクション小計セル (データ最終行の次行, 時価列 H) を評価 — 検算用 (SUM 対応の評価器)"""
+    from person_summary import make_evaluator
+    return make_evaluator(ws_f, ws_c)(max(rows) + 1, 8) or 0.0
+
+TS_DATES = sorted(_sn)          # 古い順
+ts = {k: {} for k, _ in SECTIONS}   # key → brand → {date: {...}}
+ts_fx, ts_check = {}, []
+for sn in TS_DATES:
+    load_sheet(sn)
+    d = sn[5:]
+    ts_fx[d] = USDJPY
+    for key, _ in SECTIONS:
+        rows = scan_section(key)
+        if not rows:
+            continue
+        data, total = aggregate(key, rows)
+        for x in data:
+            ts[key].setdefault(x['brand'], {})[d] = x
+        sub = section_subtotal(key, rows)
+        if abs(sub - total) > 1:
+            ts_check.append((d, key, total, sub))
+load_sheet(SN_SHEET)            # 最新シートに戻す
+print(f'時系列: {len(TS_DATES)} 日付 ({TS_DATES[0][5:]}〜{TS_DATES[-1][5:]})')
+for d, key, total, sub in ts_check:
+    print(f'  [WARN] {d} {key}: 銘柄合計 {total:,.0f} ≠ 小計 {sub:,.0f} (差 {total - sub:+,.0f})')
 
 # ══════════════════════════════════════════════════════════════
 # Excel 出力
@@ -328,6 +365,161 @@ for i, v in enumerate(tot, start=1):
                   else ('C00000' if i == 5 else '000000'))
     if i in (3, 4, 5): c.number_format = '#,##0'
     elif i in (6, 7):  c.number_format = '0.00%'
+
+# ══════════════════════════════════════════════════════════════
+# 時系列シート: 時価推移 / 増減 / 株数推移
+# ══════════════════════════════════════════════════════════════
+DATES = [sn[5:] for sn in TS_DATES]
+D_LBL = [f'{d[:4]}/{d[4:6]}/{d[6:]}' for d in DATES]
+SUB_FILL  = PatternFill('solid', fgColor='EDEDED')
+TRADE_FILL = PatternFill('solid', fgColor='FFF2CC')   # 株数変動あり (売買)
+SPLIT_FILL = PatternFill('solid', fgColor='DDEBF7')   # 株数変動あり (株式分割)
+FIX = 3   # 固定列: カテゴリ / 銘柄 / 通貨
+
+def brand_order(key):
+    """最新時価の降順、最新で保有なしの銘柄は末尾"""
+    last = DATES[-1]
+    return sorted(ts[key], key=lambda b: (-(ts[key][b].get(last, {}).get('market_value') or 0), b))
+
+def mv_of(key, b, d):
+    x = ts[key][b].get(d)
+    return x['market_value'] if x else 0.0
+
+def qty_of(key, b, d):
+    x = ts[key][b].get(d)
+    return x['qty'] if x else 0.0
+
+def qty_change(key, b, i):
+    """DATES[i] の前回比株数変動: None / 'trade'(売買) / 'split'(株式分割: 購入総額不変)"""
+    if i == 0 or abs(qty_of(key, b, DATES[i]) - qty_of(key, b, DATES[i - 1])) <= 1e-6:
+        return None
+    c0 = (ts[key][b].get(DATES[i - 1]) or {}).get('cost_total') or 0
+    c1 = (ts[key][b].get(DATES[i]) or {}).get('cost_total') or 0
+    return 'split' if c0 and abs(c1 - c0) / c0 < 0.01 else 'trade'
+
+def chg_fill(key, b, i):
+    return {'trade': TRADE_FILL, 'split': SPLIT_FILL}.get(qty_change(key, b, i))
+
+def hdr(ws, row, heads, widths=None):
+    for i, h in enumerate(heads, start=1):
+        c = ws.cell(row=row, column=i, value=h)
+        c.fill, c.font, c.border = HDR_FILL, HDR_FONT, BORDER
+        c.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+    ws.column_dimensions['A'].width = 10
+    ws.column_dimensions['B'].width = 24
+    ws.column_dimensions['C'].width = 6
+    for i in range(FIX + 1, len(heads) + 1):
+        ws.column_dimensions[get_column_letter(i)].width = 13
+    ws.freeze_panes = ws.cell(row=row + 1, column=FIX + 1)
+
+def put(ws, r, c, v, fmt='#,##0', fill=None, bold=False, sign=False):
+    cell = ws.cell(row=r, column=c, value=v)
+    cell.border, cell.number_format = BORDER, fmt
+    if fill: cell.fill = fill
+    color = '000000'
+    if sign and isinstance(v, (int, float)) and v:
+        color = '006100' if v > 0 else 'C00000'
+    cell.font = Font(bold=bold, color=color)
+    return cell
+
+def label_cells(ws, r, cat, brand, ccy, fill=None, bold=False):
+    for i, v in enumerate([cat, brand, ccy], start=1):
+        c = ws.cell(row=r, column=i, value=v)
+        c.border = BORDER
+        c.font = Font(bold=bold)
+        if fill: c.fill = fill
+
+def write_ts_sheet(title, mode):
+    """
+    mode = 'mv'  : 時価推移 + 期間増減 (初回→最新) と直近増減
+           'diff': 前回比 増減額 (売買のあった銘柄はセル黄色)
+           'qty' : 株数/口数推移 (変動セル黄色)
+    """
+    ws = wb_out.create_sheet(title)
+    ws.cell(row=1, column=1, value={
+        'mv':   f'銘柄別 時価推移 (円)  {D_LBL[0]}〜{D_LBL[-1]}',
+        'diff': '銘柄別 増減額 (前回比・円)   黄色 = 売買による株数変動あり / 青 = 株式分割 / 無色 = 価格・為替要因のみ',
+        'qty':  '銘柄別 株数/口数推移   黄色 = 売買による変動 / 青 = 株式分割 (購入総額不変)',
+    }[mode]).font = TITLE_FONT
+    ws.cell(row=2, column=1, value=f'元ファイル: {os.path.basename(EXCEL_FILE)}').font = Font(size=9, color='666666')
+
+    if mode == 'mv':
+        heads = ['カテゴリ', '銘柄', '通貨'] + D_LBL + ['期間増減', '期間増減%', '直近増減', '直近増減%']
+    elif mode == 'diff':
+        heads = ['カテゴリ', '銘柄', '通貨'] + D_LBL[1:] + ['累計増減']
+    else:
+        heads = ['カテゴリ', '銘柄', '通貨'] + D_LBL
+    HR = 4
+    r = HR + 1
+    # USD/JPY 行
+    if mode in ('mv', 'diff'):
+        label_cells(ws, r, '為替', 'USD/JPY', '', fill=SUB_FILL)
+        if mode == 'mv':
+            for i, d in enumerate(DATES):
+                put(ws, r, FIX + 1 + i, ts_fx[d], '#,##0.000', fill=SUB_FILL)
+        else:
+            for i in range(1, len(DATES)):
+                put(ws, r, FIX + i, ts_fx[DATES[i]] - ts_fx[DATES[i - 1]], '+#,##0.000;-#,##0.000;0', fill=SUB_FILL, sign=True)
+        r += 1
+    hdr(ws, HR, heads)
+
+    grand = [0.0] * len(DATES)
+    for key, label in SECTIONS:
+        sub = [0.0] * len(DATES)
+        for b in brand_order(key):
+            ccy = next(iter(ts[key][b].values()))['currency']
+            label_cells(ws, r, f'{key}.{label}', b, ccy)
+            mvs = [mv_of(key, b, d) for d in DATES]
+            for i in range(len(DATES)):
+                sub[i] += mvs[i]
+            if mode == 'mv':
+                for i, d in enumerate(DATES):
+                    put(ws, r, FIX + 1 + i, mvs[i] if d in ts[key][b] else None)
+                _tail(ws, r, len(DATES), mvs)
+            elif mode == 'diff':
+                for i in range(1, len(DATES)):
+                    put(ws, r, FIX + i, mvs[i] - mvs[i - 1], '#,##0;-#,##0;-',
+                        fill=chg_fill(key, b, i), sign=True)
+                put(ws, r, FIX + len(DATES), mvs[-1] - mvs[0], '#,##0;-#,##0;-', bold=True, sign=True)
+            else:
+                for i, d in enumerate(DATES):
+                    put(ws, r, FIX + 1 + i, qty_of(key, b, d) if d in ts[key][b] else None,
+                        '#,##0.####', fill=chg_fill(key, b, i))
+            r += 1
+        if mode != 'qty':
+            label_cells(ws, r, f'{key}.{label}', '小計', '', fill=TOT_FILL, bold=True)
+            _row_vals(ws, r, mode, sub, TOT_FILL)
+            r += 1
+        for i in range(len(DATES)):
+            grand[i] += sub[i]
+    if mode != 'qty':
+        label_cells(ws, r, '合計', '3カテゴリ合計', '', fill=HDR_FILL, bold=True)
+        for i in range(1, FIX + 1):
+            ws.cell(row=r, column=i).font = HDR_FONT
+        _row_vals(ws, r, mode, grand, TOT_FILL)
+
+def _tail(ws, r, n, mvs, fill=None, bold=False):
+    """期間増減 / 直近増減 の4列"""
+    first = next((v for v in mvs if v), 0.0)
+    put(ws, r, FIX + n + 1, mvs[-1] - first, '#,##0;-#,##0;-', fill=fill, bold=True, sign=True)
+    put(ws, r, FIX + n + 2, (mvs[-1] - first) / first if first else None, '+0.0%;-0.0%;0.0%', fill=fill, sign=True)
+    put(ws, r, FIX + n + 3, mvs[-1] - mvs[-2], '#,##0;-#,##0;-', fill=fill, bold=bold, sign=True)
+    put(ws, r, FIX + n + 4, (mvs[-1] - mvs[-2]) / mvs[-2] if mvs[-2] else None, '+0.0%;-0.0%;0.0%', fill=fill, sign=True)
+
+def _row_vals(ws, r, mode, vals, fill):
+    n = len(DATES)
+    if mode == 'mv':
+        for i in range(n):
+            put(ws, r, FIX + 1 + i, vals[i], fill=fill, bold=True)
+        _tail(ws, r, n, vals, fill=fill, bold=True)
+    else:
+        for i in range(1, n):
+            put(ws, r, FIX + i, vals[i] - vals[i - 1], '#,##0;-#,##0;-', fill=fill, bold=True, sign=True)
+        put(ws, r, FIX + n, vals[-1] - vals[0], '#,##0;-#,##0;-', fill=fill, bold=True, sign=True)
+
+write_ts_sheet('時系列_時価推移', 'mv')
+write_ts_sheet('時系列_増減', 'diff')
+write_ts_sheet('時系列_株数推移', 'qty')
 
 wb_out.save(OUT_FILE)
 print(f'\n[OK] 保存完了: {OUT_FILE}')
