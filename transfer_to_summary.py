@@ -512,16 +512,20 @@ def find_summary_links(ws_formula, sheet_name):
     col_g = get_column_letter(7)   # G列 = col7 = 時価合計
     safe  = f"'{sheet_name}'"      # シート名をシングルクォートで囲む
 
+    # ※ Summary の直下 (row160〜) に名前別集計表があり、同じ A〜J ラベルを持つ。
+    #   合計（A～J）行で走査を打ち切り、最初に見つかった行のみ採用する
+    #   (そうしないと G列=Yuji 列を誤って参照する: 2026-10-08〜11-02 のバグ)
     links = {}
     for r in range(header_row + 1, header_row + 40):
         v5 = str(ws_formula.cell(row=r, column=5).value or '').strip()
         v6 = str(ws_formula.cell(row=r, column=6).value or '').strip()
         if v5 in list('ABCDEFGHIJ') and v6:
-            links[v6] = f'={safe}!{col_g}{r}'
+            links.setdefault(v6, f'={safe}!{col_g}{r}')
         elif 'A～I' in v6 or '合計（A～I' in v6:
-            links['__total_ai__'] = f'={safe}!{col_g}{r}'
+            links.setdefault('__total_ai__', f'={safe}!{col_g}{r}')
         elif 'A～J' in v6 or '合計（A～J' in v6:
-            links['__total_aj__'] = f'={safe}!{col_g}{r}'
+            links.setdefault('__total_aj__', f'={safe}!{col_g}{r}')
+            break
 
     print(f'  Summary テーブル発見 (header=row{header_row}), {len(links)} リンクを構築')
     for lbl, ref in links.items():
