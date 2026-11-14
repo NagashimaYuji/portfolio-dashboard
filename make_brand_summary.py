@@ -24,7 +24,8 @@ def find_latest_excel(base_dir):
         raise FileNotFoundError(f'資産クラス整理_YYYYMMDD.xlsx が見つかりません: {base_dir}')
     return max(files)
 
-EXCEL_FILE = find_latest_excel(BASE_DIR)
+# 引数でファイル指定可 (最新ファイルがロック中のとき _updated 等を渡す)
+EXCEL_FILE = sys.argv[1] if len(sys.argv) > 1 else find_latest_excel(BASE_DIR)
 wb_f = openpyxl.load_workbook(EXCEL_FILE)
 wb_c = openpyxl.load_workbook(EXCEL_FILE, data_only=True)
 
