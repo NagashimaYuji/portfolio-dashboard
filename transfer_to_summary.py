@@ -36,7 +36,8 @@ def find_latest_excel(base_dir: str) -> str:
         raise FileNotFoundError(f'資産クラス整理_YYYYMMDD.xlsx が見つかりません: {base_dir}')
     return max(files)
 
-EXCEL_FILE = find_latest_excel(BASE_DIR)
+# 引数でファイル指定可 (最新ファイルがロック中のとき _updated 等を渡す)
+EXCEL_FILE = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else find_latest_excel(BASE_DIR)
 print(f'対象ファイル: {EXCEL_FILE}')
 
 TS_SHEET = '資産推移纏め'
@@ -58,13 +59,51 @@ wb_formula = openpyxl.load_workbook(tmp)
 wb_cache   = openpyxl.load_workbook(tmp, data_only=True)
 
 if SN_NEW not in wb_formula.sheetnames:
-    print(f'[ERROR] シート "{SN_NEW}" が見つかりません。利用可能: {wb_formula.sheetnames}')
-    os.remove(tmp)
-    sys.exit(1)
+    # 本日のシートが無ければ最新の日付シートを対象にする (後日の再集計用)
+    dated = sorted(s for s in wb_formula.sheetnames
+                   if s.startswith('資産クラス') and s[5:].isdigit() and len(s[5:]) == 8)
+    if not dated:
+        print(f'[ERROR] 資産クラスYYYYMMDD シートが見つかりません。利用可能: {wb_formula.sheetnames}')
+        os.remove(tmp)
+        sys.exit(1)
+    SN_NEW = dated[-1]
+    TARGET_DATE = datetime.strptime(SN_NEW[5:], '%Y%m%d').date()
+    print(f'[INFO] 本日のシートなし → 最新シート {SN_NEW} ({TARGET_DATE}) を対象にします')
 
 ws_f  = wb_formula[SN_NEW]    # 数式付きシート
 ws_c  = wb_cache[SN_NEW]      # キャッシュ値シート
 ws_ts = wb_cache[TS_SHEET]
+
+# ── シート構造の動的解決 (行の追加・削除に追従) ─────────────────
+from person_summary import scan_sections, find_fx_cell, fix_subtotals
+from openpyxl.utils import get_column_letter as _gcl
+
+# 小計 SUM 範囲の自動補正 (手で追加した行が SUM に含まれていない場合)
+_fixes = fix_subtotals(ws_f)
+if _fixes:
+    for coord, old, new in _fixes:
+        print(f'  [FIX] 小計範囲を修正: {coord}  {old} → {new}')
+        # 旧数式のキャッシュ値は無効 → 直接計算させる
+        ws_c[coord].value = None
+    wb_formula.save(tmp)   # 修正を保存 (後段 wb2 はこの tmp を読み直す)
+
+SECTIONS, _ = scan_sections(ws_f)          # {code: {'label', 'rows'}}
+FX_ROW, FX_COL = find_fx_cell(ws_f)
+FX_REF = f'{_gcl(FX_COL)}{FX_ROW}'          # 例: 'H29'
+print(f'セクション行: ' + ', '.join(f'{k}={len(v["rows"])}行' for k, v in SECTIONS.items()) + f'  / 為替セル={FX_REF}')
+
+def sec_rows(code):
+    return SECTIONS.get(code, {}).get('rows', [])
+
+def sec_subtotal_row(code):
+    """最終データ行の直後 3 行以内の '小計' 行 (C列 or G列)"""
+    rows = sec_rows(code)
+    if not rows:
+        return None
+    for r in range(max(rows) + 1, max(rows) + 4):
+        if any(str(ws_f.cell(row=r, column=c).value or '').strip() == '小計' for c in (3, 7)):
+            return r
+    return None
 
 # ── ユーティリティ ────────────────────────────────────────────
 def cached(r, c):
@@ -106,8 +145,8 @@ def eval_cell(r, c, usdjpy):
         except (TypeError, ValueError):
             return None
     expr = s[1:].replace('$', '').strip()
-    # H29 参照 → USDJPY
-    if re.fullmatch(r'H29', expr, re.IGNORECASE):
+    # 直近為替セル参照 (例: H29) → USDJPY
+    if expr.upper() == FX_REF:
         return usdjpy
     # SUM(範囲) 形式 (例: =SUM(I127:I128)) → 範囲内セルを再帰評価して合計
     m_sum = re.fullmatch(r'SUM\(([A-Z]+)(\d+):([A-Z]+)(\d+)\)', expr, re.IGNORECASE)
@@ -163,6 +202,14 @@ for c in range(3, ws_ts.max_column + 2):
 if target_col is None:
     target_col = ws_ts.max_column + 1
 
+# 日付なしの「前回比」列 (=AAV3-AAU3 等) が末尾にある場合は、その位置に新列を入れ、前回比列を 1 列右に作り直す
+diff_col_rows = [r for r in range(3, 17)
+                 if ws_ts.cell(row=2, column=target_col).value is None
+                 and isinstance(wb_formula[TS_SHEET].cell(row=r, column=target_col).value, str)
+                 and re.fullmatch(r'=[A-Z]+\d+-[A-Z]+\d+', wb_formula[TS_SHEET].cell(row=r, column=target_col).value.replace('$', ''))]
+if diff_col_rows:
+    print(f'  末尾の前回比列 (col={target_col}) を検出 → 新列を挿入し前回比を col={target_col + 1} に再作成')
+
 base_col = target_col - 1
 print(f'書き込み列={target_col}  ベース列={base_col}')
 
@@ -174,10 +221,10 @@ def base_val(label):
     return 0.0
 
 # ── USDJPY 取得 ──────────────────────────────────────────────
-USDJPY_NEW = cached(29, 8)
+USDJPY_NEW = cached(FX_ROW, FX_COL)
 if not USDJPY_NEW or USDJPY_NEW < 50:
     # 数式シートから直接値を取得 (update_stock.py が書き込む直接値)
-    v = formula_val(29, 8)
+    v = formula_val(FX_ROW, FX_COL)
     try:
         USDJPY_NEW = float(v) if isinstance(v, (int, float)) else float(str(v))
     except Exception:
@@ -191,14 +238,15 @@ SN_PREV_CANDIDATES = [s for s in wb_formula.sheetnames if s.startswith('資産�
 USDJPY_PREV = None
 if SN_PREV_CANDIDATES:
     sn_prev = sorted(SN_PREV_CANDIDATES)[-1]
-    v_prev = wb_cache[sn_prev].cell(row=29, column=8).value
+    _pr, _pc = find_fx_cell(wb_formula[sn_prev])
+    v_prev = wb_cache[sn_prev].cell(row=_pr, column=_pc).value
     try:
         USDJPY_PREV = float(v_prev) if v_prev is not None else None
     except (TypeError, ValueError):
         pass
     # フォールバック: 数式シートから
     if not USDJPY_PREV or USDJPY_PREV < 50:
-        v2 = wb_formula[sn_prev].cell(row=29, column=8).value
+        v2 = wb_formula[sn_prev].cell(row=_pr, column=_pc).value
         try:
             USDJPY_PREV = float(v2) if isinstance(v2, (int, float)) else None
         except Exception:
@@ -214,7 +262,7 @@ print(f'USDJPY: 前回={USDJPY_PREV:.3f}  新={USDJPY_NEW:.3f}')
 # セクション動的スキャン
 # ═══════════════════════════════════════════════════════════
 
-def scan_section(section_label, search_start=70):
+def scan_section(section_label, search_start=1):
     """
     B列= section_label のセクションの (小計行, データ行リスト) を返す。
     """
@@ -245,11 +293,12 @@ def scan_section(section_label, search_start=70):
 totals = {}
 
 # ── A: 円建て現預金 ────────────────────────────────────────
-sec_a = cached(26, 6)
+_a_sub = sec_subtotal_row('A')
+sec_a = cached(_a_sub, 6) if _a_sub else None
 if not sec_a:
-    # col6 フォールバック: 直接値の合計 (rows 6-25)
+    # col6 フォールバック: データ行の直接値の合計
     sec_a = sum(
-        float(v) for r in range(6, 26)
+        float(v) for r in sec_rows('A')
         if (v := formula_val(r, 6)) is not None and isinstance(v, (int, float)) and v > 0
     )
 if not sec_a:
@@ -260,11 +309,12 @@ else:
 totals['円建て現預金'] = sec_a
 
 # ── B: 外貨現預金 ──────────────────────────────────────────
-sec_b = cached(36, 6)
+_b_sub = sec_subtotal_row('B')
+sec_b = cached(_b_sub, 6) if _b_sub else None
 if not sec_b:
     # col6 = col8(rate) * col7(外貨額) の数式 → 直接計算
     total_b = 0.0
-    for r in range(29, 36):
+    for r in sec_rows('B'):
         d = ws_f.cell(row=r, column=4).value
         if not d or str(d).strip() in ('名前', ''):
             continue
@@ -283,40 +333,27 @@ totals['外貨現預金'] = sec_b
 
 # ── C: 円建て社債 ──────────────────────────────────────────
 sec_c = 0.0
-for r in range(38, 58):
-    c3 = str(ws_f.cell(row=r, column=3).value or '').strip()
-    if c3 == '小計':
-        break
+for r in sec_rows('C'):
     v = eval_cell(r, 7, USDJPY_NEW)
     if v and v > 0:
         sec_c += v
-if not sec_c:
+if not sec_rows('C'):
     sec_c = base_val('円建て社債')
-    print(f'C 円建て社債: 取得失敗 → ベース {sec_c:,.0f}')
+    print(f'C 円建て社債: データ行なし → ベース {sec_c:,.0f}')
 else:
-    print(f'C 円建て社債: {sec_c:,.0f}')
+    print(f'C 円建て社債: {sec_c:,.0f}')   # 0 は償還済み等の正当な値
 totals['円建て社債'] = sec_c
 
 # ── D: US$建て社債 ─────────────────────────────────────────
 # 小計行: col7='小計' かつ col8=SUM数式 (col3 ではなく col7 に小計ラベル)
 d_label = next((k for k in ts_row_map if 'US' in k and '社債' in k), 'US＄建て社債')
 # 小計行を動的検索
-d_subtotal_row = None
-for r in range(42, 60):
-    c7 = str(ws_f.cell(row=r, column=7).value or '').strip()
-    c3 = str(ws_f.cell(row=r, column=3).value or '').strip()
-    if c7 == '小計' or c3 == '小計':
-        d_subtotal_row = r
-        break
+d_subtotal_row = sec_subtotal_row('D')
 sec_d = cached(d_subtotal_row, 8) if d_subtotal_row else None
 if not sec_d:
     # col8 = col9(評価単価%) × USDJPY × col12(額面lots)
     total_d = 0.0
-    end_row = d_subtotal_row if d_subtotal_row else 56
-    for r in range(43, end_row):
-        d = ws_f.cell(row=r, column=4).value
-        if not d or str(d).strip() in ('名前', ''):
-            continue
+    for r in sec_rows('D'):
         price = eval_cell(r, 9, USDJPY_NEW)   # 評価単価 (セル参照も解決)
         face  = eval_cell(r, 12, USDJPY_NEW)  # 額面 (L列)
         if price is not None and face is not None and isinstance(face, (int, float)) and face > 0:
@@ -332,42 +369,46 @@ totals[d_label] = sec_d
 
 # ── E: Private Credit ─────────────────────────────────────
 e_label = next((k for k in ts_row_map if 'Private' in k or 'Credit' in k), 'Private Credit')
-sec_e = cached(56, 8)
-if not sec_e:
-    v56 = formula_val(56, 8)
-    if isinstance(v56, (int, float)) and v56 > 0:
-        sec_e = float(v56)
-    else:
-        # H56 = =I56*J56*L56: 評価単価(USD) × USDJPY × 額面
-        # L56 は数値だが日付書式で保存されている → eval_cell で Excel シリアルに変換
-        price_e = eval_cell(56, 9, USDJPY_NEW)   # I56: 評価単価 (USD)
-        face_e  = eval_cell(56, 12, USDJPY_NEW)  # L56: 額面 (datetime→シリアル変換)
-        if price_e and face_e and face_e > 0:
-            sec_e = price_e * USDJPY_NEW * face_e
-            print(f'E {e_label}: {sec_e:,.0f}  (評価単価×FX×額面: {price_e:.4f}×{USDJPY_NEW:.2f}×{face_e:.0f})')
+# E はセクション見出し行自体がデータ行 (小計行なし) → データ行の H 列を合算
+sec_e = 0.0
+for r in sec_rows('E'):
+    v = cached(r, 8)
+    if not v:
+        v_f = formula_val(r, 8)
+        if isinstance(v_f, (int, float)) and v_f > 0:
+            v = float(v_f)
         else:
-            e_base = base_val(e_label)
-            sec_e = e_base * (USDJPY_NEW / USDJPY_PREV) if e_base else 0.0
-            print(f'E {e_label}: 直接計算失敗 (price={price_e}, face={face_e}) → 為替調整ベース {sec_e:,.0f}')
+            # H = I*J*L: 評価単価(USD) × USDJPY × 額面 (L は日付書式で保存 → eval_cell でシリアル変換)
+            price_e = eval_cell(r, 9, USDJPY_NEW)
+            face_e  = eval_cell(r, 12, USDJPY_NEW)
+            if price_e and face_e and face_e > 0:
+                v = price_e * USDJPY_NEW * face_e
+                print(f'E {e_label}: row{r} 評価単価×FX×額面 = {price_e:.4f}×{USDJPY_NEW:.2f}×{face_e:.0f}')
+            else:
+                print(f'E {e_label}: row{r} 直接計算失敗 (price={price_e}, face={face_e})')
+                v = 0.0
+    sec_e += v
+if not sec_e:
+    e_base = base_val(e_label)
+    sec_e = e_base * (USDJPY_NEW / USDJPY_PREV) if e_base else 0.0
+    print(f'E {e_label}: 取得失敗 → 為替調整ベース {sec_e:,.0f}')
 if sec_e:
     print(f'E {e_label}: {sec_e:,.0f}')
 totals[e_label] = sec_e
 
 # ── F: 投資信託 ────────────────────────────────────────────
-sec_f = cached(68, 8)
+_f_sub = sec_subtotal_row('F')
+sec_f = cached(_f_sub, 8) if _f_sub else None
 if not sec_f:
     total_f = 0.0
-    for r in range(60, 68):
-        d = ws_f.cell(row=r, column=4).value
-        if not d or str(d).strip() in ('名前', ''):
-            continue
+    for r in sec_rows('F'):
         price  = eval_cell(r, 7, USDJPY_NEW)   # 時価単価 (JPY/口 or USD/口)
         shares = eval_cell(r, 10, USDJPY_NEW)  # 口数 (J列)
         if price is None or shares is None:
             continue
-        # N列 (col14) が =$H$29 なら USD ETF → USDJPY 乗算
+        # N列 (col14) が直近為替セル参照 (=$H$29) なら USD ETF → USDJPY 乗算
         n_val = formula_val(r, 14)
-        is_usd = isinstance(n_val, str) and 'H29' in n_val.replace('$', '')
+        is_usd = isinstance(n_val, str) and FX_REF in n_val.replace('$', '')
         total_f += price * shares * (USDJPY_NEW if is_usd else 1.0)
     sec_f = total_f if total_f > 0 else base_val('投資信託')
     if total_f > 0:
@@ -613,6 +654,17 @@ for r in range(2, ws_ts2.max_row + 1):
 print(f'書き込んだ行:')
 for r, lbl, v in written:
     print(f'  row{r} "{lbl}": {v}')
+
+# 前回比列を 1 列右に作り直す (=新列 − 前回列)
+if diff_col_rows:
+    from openpyxl.utils import get_column_letter
+    dc, nc, pc = target_col + 1, get_column_letter(target_col), get_column_letter(base_col)
+    written_rows = {r for r, _, _ in written}
+    for r in range(3, 17):
+        ws_ts2.cell(row=r, column=dc).value = f'={nc}{r}-{pc}{r}' if r in diff_col_rows else None
+        if r in diff_col_rows and r not in written_rows:
+            ws_ts2.cell(row=r, column=target_col).value = None   # ラベル無し行に残った旧前回比式を消す (循環参照防止)
+    print(f'前回比列を再作成: col={dc}  (={nc}n-{pc}n)')
 
 wb2.save(tmp)
 try:

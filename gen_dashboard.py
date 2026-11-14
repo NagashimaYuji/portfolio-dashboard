@@ -175,7 +175,11 @@ def fv(r, c):
     except (TypeError, ValueError):
         return None
 
-usdjpy    = fv(29, 8) or 143.0
+from person_summary import find_fx_cell as _find_fx_cell
+from openpyxl.utils import get_column_letter as _gcl
+FX_ROW, FX_COL = _find_fx_cell(ws_sn)
+FX_REF    = f'{_gcl(FX_COL)}{FX_ROW}'          # 直近為替セル (例: H29)
+usdjpy    = fv(FX_ROW, FX_COL) or 143.0
 upd_date  = sv(1, 1)
 print(f'  USDJPY={usdjpy}, 更新日={upd_date}')
 
@@ -416,7 +420,7 @@ def extract_sec_f_full(rows):
         qty        = fv(r, 10) or cell_num(r, 10)  # 数量
         # col14 に =$H$29 が入っていればUSD建て
         n_fml = wb_formula[SN_SHEET].cell(row=r, column=14).value
-        is_usd = isinstance(n_fml, str) and 'H29' in n_fml.replace('$', '')
+        is_usd = isinstance(n_fml, str) and FX_REF in n_fml.replace('$', '')
         fx = usdjpy if is_usd else None
         # 評価総額: キャッシュ優先、なければ計算
         eval_total = cell_num(r, 8)
@@ -612,7 +616,7 @@ for rd in detail.get('F', {}).get('rows', []):
             qty   = rd.get('quantity') or cell_num(rd['row'], 10)
             if price and qty:
                 n_fml = wb_formula[SN_SHEET].cell(row=rd['row'], column=14).value
-                is_usd = n_fml and 'H29' in str(n_fml).replace('$', '')
+                is_usd = n_fml and FX_REF in str(n_fml).replace('$', '')
                 v = price * qty * (usdjpy if is_usd else 1.0)
         if v:
             person_totals[p] += v

@@ -92,8 +92,11 @@ def sv(r, c, depth=6):
             return sv(int(m.group(2)), column_index_from_string(m.group(1).upper()), depth - 1)
     return s
 
-USDJPY = ev(29, 8) or 0.0
-print(f'直近為替 USDJPY = {USDJPY}')
+from person_summary import find_fx_cell
+FX_ROW, FX_COL = find_fx_cell(ws_f)
+FX_REF = f'{get_column_letter(FX_COL)}{FX_ROW}'
+USDJPY = ev(FX_ROW, FX_COL) or 0.0
+print(f'直近為替 USDJPY = {USDJPY}  ({FX_REF})')
 
 # ── 銘柄名の正規化 (表記ゆれ吸収) ────────────────────────────
 BRAND_ALIAS = {
@@ -152,9 +155,9 @@ def aggregate(section, rows):
         qty = ev(r, 10)      # 数量
         if qty is None:
             qty = 0.0
-        # col14 が =$H$29 → USD 建て
+        # col14 が =$H$29 (直近為替セル参照) → USD 建て
         n_raw = ws_f.cell(row=r, column=14).value
-        is_usd = isinstance(n_raw, str) and 'H29' in n_raw.replace('$', '')
+        is_usd = isinstance(n_raw, str) and FX_REF in n_raw.replace('$', '')
         p_fx = ev(r, 15) if is_usd else None
 
         a = agg.setdefault(brand, {
@@ -220,9 +223,11 @@ for key, label in SECTIONS:
 # ── 時系列: 全日付シートを銘柄別に集計 ─────────────────────────
 def load_sheet(sn):
     """ev / sv / scan_section / aggregate の対象シートを切り替える"""
-    global ws_f, ws_c, USDJPY
+    global ws_f, ws_c, USDJPY, FX_REF
     ws_f, ws_c = wb_f[sn], wb_c[sn]
-    USDJPY = ev(29, 8) or 0.0
+    fr, fc = find_fx_cell(ws_f)
+    FX_REF = f'{get_column_letter(fc)}{fr}'
+    USDJPY = ev(fr, fc) or 0.0
 
 def section_subtotal(key, rows):
     """セクション小計セル (データ最終行の次行, 時価列 H) を評価 — 検算用 (SUM 対応の評価器)"""

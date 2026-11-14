@@ -105,16 +105,78 @@ def find_summary_rows(ws):
     rows = {}
     if hdr:
         for r in range(hdr + 1, hdr + 20):
-            code = str(ws.cell(row=r, column=5).value or '').strip()
-            if re.fullmatch(r'[A-J]', code):
-                rows[code] = r
+            e = str(ws.cell(row=r, column=5).value or '').strip()
+            if '名前別' in e:
+                break                      # 直下の名前別集計表 (同じ A〜J ラベル) に入ったら終了
+            if re.fullmatch(r'[A-J]', e):
+                rows.setdefault(e, r)      # 最初に見つかった Summary 行のみ採用
     return rows
+
+
+def find_fx_cell(ws):
+    """
+    直近為替 (USD/JPY) セルの (row, col) を返す。
+    B セクションのヘッダ '直近為替' の直下で最初に数値が入っている行。見つからなければ (29, 8)。
+    """
+    for r in range(1, 60):
+        for c in range(5, 12):
+            if str(ws.cell(row=r, column=c).value or '').strip() == '直近為替':
+                for rr in range(r + 1, r + 6):
+                    v = ws.cell(row=rr, column=c).value
+                    if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 50:
+                        return rr, c
+                return r + 1, c
+    return 29, 8
+
+
+def fx_ref(ws):
+    """直近為替セルの A1 形式 (例: 'H29')"""
+    r, c = find_fx_cell(ws)
+    return f'{get_column_letter(c)}{r}'
+
+
+def table_top(ws):
+    """名前別集計表のタイトル行。Summary ヘッダ行 + 16 (行挿入でずれても追従)。見つからなければ TABLE_TOP"""
+    for r in range(100, min(ws.max_row, 300) + 1):
+        if str(ws.cell(row=r, column=5).value or '').strip() == SUMMARY_HEADER_LABEL:
+            return r + 16
+    return TABLE_TOP
+
+
+def fix_subtotals(ws):
+    """
+    各セクションの小計 =SUM(X&:X&) がデータ行を全て含むか検査し、末尾が不足していれば範囲を広げる。
+    (行を手で追加したとき Excel が SUM 範囲を広げない場合の救済)
+    戻り値: [(セル座標, 旧数式, 新数式), ...]
+    """
+    sections, _ = scan_sections(ws)
+    fixes = []
+    for code, sec in sections.items():
+        rows = sec['rows']
+        if not rows:
+            continue
+        first, last = min(rows), max(rows)
+        sub = next((r for r in range(last + 1, last + 4) if _is_subtotal_row(ws, r)), None)
+        if sub is None:
+            continue
+        for c in range(5, 16):
+            cell = ws.cell(row=sub, column=c)
+            m = re.fullmatch(r'=SUM\(([A-Z]+)(\d+):([A-Z]+)(\d+)\)', str(cell.value or '').replace('$', ''))
+            if not m or m.group(1) != m.group(3):
+                continue
+            a, b = int(m.group(2)), int(m.group(4))
+            if a <= first and b < last:
+                new = f'=SUM({m.group(1)}{a}:{m.group(3)}{last})'
+                fixes.append((cell.coordinate, cell.value, new))
+                cell.value = new
+    return fixes
 
 
 def write_person_summary(ws):
     """ws (資産クラスシート) に名前別集計表を書き込む (既存領域は上書き)"""
     sections, order = scan_sections(ws)
     sum_rows = find_summary_rows(ws)
+    TABLE_TOP = table_top(ws)   # Summary 表の位置に追従
 
     # 既存の表領域をクリア (再実行時の残骸を消す)
     for r in range(TABLE_TOP, TABLE_TOP + TABLE_ROWS):
@@ -200,7 +262,7 @@ def write_person_summary(ws):
         c = ws.cell(row=r, column=col, value=f'=IF(${L(c_tot)}${li}=0,"",{L(col)}{li}/${L(c_tot)}${li})')
         c.number_format, c.border = '0.0%', BORDER
 
-    return {'sections': sections, 'cls_row_of': cls_row_of, 'tot_row_of': tot_row_of}
+    return {'sections': sections, 'cls_row_of': cls_row_of, 'tot_row_of': tot_row_of, 'table_top': TABLE_TOP}
 
 
 # ══════════════════════════════════════════════════════════════
@@ -313,11 +375,14 @@ if __name__ == '__main__':
     if sys.stdout.encoding and sys.stdout.encoding.lower() in ('cp932', 'shift_jis', 'shift-jis'):
         sys.stdout.reconfigure(encoding='utf-8', errors='replace')
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-    path = _find_latest_excel(BASE_DIR)
+    # 引数でファイル指定可 (最新ファイルがロック中のとき _updated 等を渡す)
+    path = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else _find_latest_excel(BASE_DIR)
     wb = openpyxl.load_workbook(path)
     sn = sorted([s for s in wb.sheetnames
                  if s.startswith('資産クラス') and s[5:].isdigit() and len(s[5:]) == 8])[-1]
     ws = wb[sn]
-    write_person_summary(ws)
+    for coord, old, new in fix_subtotals(ws):
+        print(f'[FIX] 小計範囲を修正: {coord}  {old} → {new}')
+    info = write_person_summary(ws)
     wb.save(path)
-    print(f'[OK] 名前別集計を書き込み: {os.path.basename(path)} / {sn} (row{TABLE_TOP}〜)')
+    print(f'[OK] 名前別集計を書き込み: {os.path.basename(path)} / {sn} (row{info["table_top"]}〜)')
