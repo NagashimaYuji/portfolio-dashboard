@@ -172,6 +172,41 @@ def fix_subtotals(ws):
     return fixes
 
 
+def fill_missing_row_formulas(ws):
+    """
+    F/G/H セクションで、手入力した行に未入力の数式セルがあれば補完する。
+      H=時価総額 (G×J[×N])、K=購入総額 (J×I[×O])、L=含み損益、M=含み損益％、N=直近為替参照 (USD 建てのみ)
+    既に値があるセルは触らない。戻り値: [(セル座標, 数式), ...]
+    """
+    sections, _ = scan_sections(ws)
+    m = re.match(r'([A-Z]+)(\d+)', fx_ref(ws))
+    abs_fx = f'=${m.group(1)}${m.group(2)}'
+    fills = []
+
+    def put(r, c, f):
+        cell = ws.cell(row=r, column=c)
+        if cell.value is None:
+            cell.value = f
+            fills.append((cell.coordinate, f))
+
+    for code in ('F', 'G', 'H'):
+        for r in sections.get(code, {}).get('rows', []):
+            if ws.cell(row=r, column=10).value is None:      # 口数なし → 対象外
+                continue
+            n = ws.cell(row=r, column=14).value
+            o = ws.cell(row=r, column=15).value
+            usd = (code == 'H'
+                   or (isinstance(n, str) and n.startswith('='))
+                   or (code == 'F' and o is not None))
+            if usd:
+                put(r, 14, abs_fx)
+            put(r, 8,  f'=G{r}*J{r}*N{r}' if usd else f'=G{r}*J{r}')
+            put(r, 11, f'=J{r}*I{r}*O{r}' if usd else f'=J{r}*I{r}')
+            put(r, 12, f'=H{r}-K{r}')
+            put(r, 13, f'=L{r}/K{r}')
+    return fills
+
+
 def write_person_summary(ws):
     """ws (資産クラスシート) に名前別集計表を書き込む (既存領域は上書き)"""
     sections, order = scan_sections(ws)

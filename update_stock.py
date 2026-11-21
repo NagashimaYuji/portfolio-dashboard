@@ -85,6 +85,7 @@ YF_TICKERS = [
     ('2501.T', 'G', r'2501'),            # サッポロHD
     ('285A.T', 'G', r'285A'),            # キオクシア
     ('7011.T', 'G', r'7011'),            # 三菱重工
+    ('446A.T', 'G', r'446A|ノースサンド'),  # ノースサンド (2026-11 追加)
     # 米国株
     ('GOOG',   'H', r'^GOOGL?$'),
     ('ISRG',   'H', r'^ISRG$'),
@@ -242,7 +243,7 @@ def main():
     wb = openpyxl.load_workbook(tmp_path)
 
     from person_summary import (write_person_summary, scan_sections,
-                                find_fx_cell, fix_subtotals)
+                                find_fx_cell, fix_subtotals, fill_missing_row_formulas)
 
     if new_sheet in wb.sheetnames:
         # 同日に再実行: 既存シートを壊さず (手で追加した行を残して) 価格だけ更新
@@ -261,6 +262,9 @@ def main():
     # 小計 SUM 範囲の自動補正 (手で行を追加したときの取りこぼし)
     for coord, old, new in fix_subtotals(ws):
         print(f'  [FIX] 小計範囲を修正: {coord}  {old} → {new}')
+    # 手入力行の未入力数式 (時価総額/購入総額/含み損益/為替参照) を補完
+    for coord, f in fill_missing_row_formulas(ws):
+        print(f'  [FILL] {coord} = {f}')
 
     print('\n--- 価格取得・更新 ---')
     updated_rows = set()
